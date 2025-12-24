@@ -210,9 +210,10 @@ class FlexFourier(nn.Module):
             base = _param_base_shape(self.mode, H, W, C, max_h=self.max_h, max_w=self.max_w)
             shape = base + (self.n_terms,)
 
+            # residual amplitude tiny => near-identity
             a = torch.empty(shape, device=x.device, dtype=x.dtype).normal_(0.0, self.init_scale)
-            w = torch.ones(shape, device=x.device, dtype=x.dtype)
-            p = torch.zeros(shape, device=x.device, dtype=x.dtype)
+            w = torch.full(shape, self.init_w, device=x.device, dtype=x.dtype)
+            p = torch.full(shape, self.init_p, device=x.device, dtype=x.dtype)
 
             self.a = nn.Parameter(a)
             self.w = nn.Parameter(w)
@@ -221,7 +222,6 @@ class FlexFourier(nn.Module):
         else:
             if self.mode in ("channel", "voxel") and self._C is not None and C != self._C:
                 raise ValueError(f"Channel size C changed from {self._C} to {C} for mode='{self.mode}'.")
-
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._maybe_init(x)
@@ -279,7 +279,6 @@ class FlexSpline(nn.Module):
 
     def _maybe_init(self, x: torch.Tensor):
         H, W, C = _infer_hwc(x)
-
         if self.knots_x.device != x.device or self.knots_x.dtype != x.dtype:
             self.knots_x = self.knots_x.to(device=x.device, dtype=x.dtype)
 
@@ -288,8 +287,9 @@ class FlexSpline(nn.Module):
             shape = base + (self.n_knots,)
 
             if self.init == "identity":
-                # y = x at knots
                 ky = self.knots_x.view(1, 1, 1, -1).expand(*base, self.n_knots).clone()
+                if self.init_eps > 0:
+                    ky = ky + torch.empty_like(ky).normal_(0.0, self.init_eps)
             else:
                 ky = torch.zeros(shape, dtype=x.dtype, device=x.device)
 
@@ -364,8 +364,17 @@ class FlexPolynomial(nn.Module):
             shape = base + (self.degree + 1,)
 
             c = torch.zeros(shape, dtype=x.dtype, device=x.device)
-            if self.init == "identity" and self.degree >= 1:
-                c[..., 1] = 1.0
+
+            if self.init == "identity":
+                if self.degree >= 1:
+                    c[..., 1] = 1.0
+                # tiny higher-order terms
+                if self.init_scale > 0 and self.degree >= 2:
+                    c[..., 2:] = torch.empty_like(c[..., 2:]).normal_(0.0, self.init_scale)
+            else:
+                if self.init_scale > 0:
+                    c = c + torch.empty_like(c).normal_(0.0, self.init_scale)
+
             self.c = nn.Parameter(c)
             self._C = C
         else:

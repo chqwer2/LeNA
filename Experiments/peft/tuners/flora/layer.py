@@ -5,7 +5,7 @@ from typing import Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 
-from .activations_hwcc import make_flora_activation
+from .activations import make_flora_activation
 from .config import FloraConfig
 from .gates import Gate
 
