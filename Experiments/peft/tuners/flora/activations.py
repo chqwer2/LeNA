@@ -117,29 +117,9 @@ class FlexReLU(nn.Module):
         self.a: Optional[nn.Parameter] = None
         self._C: Optional[int] = None  # for channel/voxel consistency
 
-    def _maybe_init(self, x: torch.Tensor):
-        H, W, C = _infer_hwc(x)
-        if self.a is None:
-            base = _param_base_shape(self.mode, H, W, C, max_h=self.max_h, max_w=self.max_w)
-            self.a = nn.Parameter(torch.full(base, self.init_a, dtype=x.dtype, device=x.device))
-            self._C = C
-        else:
-            # If channel/voxel, C matters; if it changes, that's not supported (would change param count).
-            if self.mode in ("channel", "voxel") and self._C is not None and C != self._C:
-                raise ValueError(f"Channel size C changed from {self._C} to {C} for mode='{self.mode}'.")
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._maybe_init(x)
-        H, W, _ = _infer_hwc(x)
-        a = self.a
-        if a is None:
-            return x
-
-        if self.mode in ("spatial", "voxel"):
-            a = _slice_hw(a, H, W)
-
-        a = _broadcast_param_to_x(a, x)
-        return torch.where(x >= 0, x, a * x)
+        return torch.where(x >= 0, x, 0)
 
 
 class FlexGELU(nn.Module):

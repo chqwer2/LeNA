@@ -408,6 +408,102 @@ def build_peft_config(
     raise ValueError(f"Unknown method: {method}")
 
 
+from transformers.trainer_pt_utils import get_parameter_names
+from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
+
+def build_grouped_optimizer(
+    model,
+    base_lr: float,
+    act_lr_mult: float = 0.1,     # activation LR = base_lr * act_lr_mult
+    gate_lr_mult: float = 0.5,    # gate LR = base_lr * gate_lr_mult
+    weight_decay: float = 0.01,
+    betas=(0.9, 0.95),
+    eps: float = 1e-8,
+):
+    # Names that should NOT use weight decay (LayerNorm, biases)
+    decay_parameters = get_parameter_names(model, ALL_LAYERNORM_LAYERS)
+    decay_parameters = [n for n in decay_parameters if not n.endswith(".bias")]
+
+    # Helper: classify params by name
+    def is_act(n: str) -> bool:
+        # covers: FloraLinear.act.<key>.<param>, Flex* params, etc.
+        return (".act." in n) or ("flora_act" in n) or (n.endswith(".knots_y")) or (n.endswith(".c"))
+
+    def is_gate(n: str) -> bool:
+        return (".gate_after_" in n) or ("flora_gate" in n) or ("gate_after" in n)
+
+    def is_adapter(n: str) -> bool:
+        # LoRA/DoRA names vary; for your FloraLinear it might be A/B or flora_A/flora_B
+        return (".A." in n) or (".B." in n) or ("flora_A" in n) or ("flora_B" in n) or ("lora_" in n)
+
+    # Collect trainable params
+    named = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+
+    groups = {
+        "adapter_decay": [],
+        "adapter_nodecay": [],
+        "act_nodecay": [],
+        "gate_nodecay": [],
+        "other_decay": [],
+        "other_nodecay": [],
+    }
+
+    for n, p in named:
+        use_decay = n in decay_parameters
+
+        if is_act(n):
+            groups["act_nodecay"].append(p)     # usually no WD for activation shaping
+        elif is_gate(n):
+            groups["gate_nodecay"].append(p)    # no WD for gates
+        elif is_adapter(n):
+            (groups["adapter_decay"] if use_decay else groups["adapter_nodecay"]).append(p)
+        else:
+            (groups["other_decay"] if use_decay else groups["other_nodecay"]).append(p)
+
+    # Build param_groups (skip empty)
+    param_groups = []
+
+    def add(ps, lr, wd):
+        if len(ps) > 0:
+            param_groups.append({"params": ps, "lr": lr, "weight_decay": wd})
+
+    add(groups["adapter_decay"],     base_lr, weight_decay)
+    add(groups["adapter_nodecay"],   base_lr, 0.0)
+
+    add(groups["act_nodecay"],       base_lr * act_lr_mult, 0.0)
+    add(groups["gate_nodecay"],      base_lr * gate_lr_mult, 0.0)
+
+    # If you truly only train flora params, these "other" groups will be empty.
+    add(groups["other_decay"],       base_lr, weight_decay)
+    add(groups["other_nodecay"],     base_lr, 0.0)
+
+    optimizer = torch.optim.AdamW(param_groups, betas=betas, eps=eps)
+    return optimizer
+
+import numpy as np
+def compute_metrics(eval_pred):
+    logits, labels = eval_pred
+    # logits: [batch, seq, vocab]
+    # labels: [batch, seq]
+
+    # next-token prediction: compare logits at t-1 to label at t
+    preds = np.argmax(logits, axis=-1)
+
+    # shift so we're evaluating next-token accuracy
+    shift_preds = preds[:, :-1]
+    shift_labels = labels[:, 1:]
+
+    # ignore -100 labels (if any)
+    mask = shift_labels != -100
+    if mask.sum() == 0:
+        return {"token_acc": 0.0}
+
+    correct = (shift_preds == shift_labels) & mask
+    token_acc = correct.sum() / mask.sum()
+
+    return {"token_acc": float(token_acc)}
+
+
 # -------------------------
 # Main training function (single run)
 # -------------------------
@@ -580,15 +676,52 @@ def train_one_run(
         report_to="none",
     )
 
+    optimizer = build_grouped_optimizer(
+        model,
+        base_lr=training_args.learning_rate,
+        act_lr_mult=0.1,  # start conservative
+        gate_lr_mult=0.5,
+        weight_decay=training_args.weight_decay,
+        betas=(0.9, 0.95),
+        eps=1e-8,
+    )
+
+    DEBUG = False
+    if DEBUG:
+        tr_n = min(20, len(tokenized["train"]))
+        ev_n = min(20, len(tokenized["test"]))
+
+        train_dataset = tokenized["train"].select(range(tr_n))
+        eval_dataset = tokenized["test"].select(range(ev_n))
+
+    else:
+        train_dataset = tokenized["train"]
+        eval_dataset = tokenized["test"]
+
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=tokenized["train"],
-        eval_dataset=tokenized["test"],
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
         data_collator=data_collator,
+        optimizers=(optimizer, None),
+        compute_metrics=compute_metrics,  # <-- add this
     )
 
     trainer.train()
+
+    # -------------------------
+    # Final evaluation on full test set
+    # -------------------------
+    metrics = trainer.evaluate(eval_dataset=eval_dataset, metric_key_prefix="test")
+    print("\n=== Final test metrics ===")
+    for k, v in metrics.items():
+        print(f"{k}: {v}")
+
+    # Optional: persist metrics
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, "test_metrics.json"), "w") as f:
+        json.dump(metrics, f, indent=2)
 
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
@@ -597,6 +730,74 @@ def train_one_run(
         trainer.push_to_hub(commit_message=f"Fine-tuned with {method}")
 
     return output_dir
+
+
+
+def build_optimizer_param_groups(
+    model: torch.nn.Module,
+    base_lr: float,
+    *,
+    act_lr_mult: float = 0.1,     # activation params slower
+    gate_lr_mult: float = 0.5,    # gates slower (often)
+    act_weight_decay: float = 0.0,
+    gate_weight_decay: float = 0.0,
+    adapter_weight_decay: float = 0.01,
+):
+    """
+    Creates optimizer param groups for:
+      - adapters (A/B, lora_*): base_lr
+      - gates: base_lr * gate_lr_mult
+      - activations: base_lr * act_lr_mult
+    """
+    act_params, gate_params, adapter_params = [], [], []
+
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+
+        n = name.lower()
+
+        # --- activation parameters ---
+        # matches your Flex* modules: a, k, (fourier) a/w/p, (spline) knots_y, (poly) c
+        if any(tok in n for tok in [
+            ".act.", "flora_act", "knots_y",  # module containers / spline
+        ]) or n.endswith((".a", ".k", ".w", ".p", ".c")):
+            act_params.append(p)
+            continue
+
+        # --- gate parameters ---
+        if "gate_after_a" in n or "gate_after_b" in n or ".gate." in n:
+            gate_params.append(p)
+            continue
+
+        # --- adapter parameters (A/B or lora) ---
+        if any(tok in n for tok in ["flora_a", "flora_b", ".a.", ".b.", "lora_", "lora"]):
+            adapter_params.append(p)
+            continue
+
+        # fallback: if it is trainable but doesn't match, treat as adapter
+        adapter_params.append(p)
+
+    param_groups = []
+    if adapter_params:
+        param_groups.append(
+            {"params": adapter_params, "lr": base_lr, "weight_decay": adapter_weight_decay}
+        )
+    if gate_params:
+        param_groups.append(
+            {"params": gate_params, "lr": base_lr * gate_lr_mult, "weight_decay": gate_weight_decay}
+        )
+    if act_params:
+        param_groups.append(
+            {"params": act_params, "lr": base_lr * act_lr_mult, "weight_decay": act_weight_decay}
+        )
+
+    # (optional) debug print sizes
+    def _count(ps): return sum(p.numel() for p in ps)
+    print(f"[opt groups] adapter={_count(adapter_params):,} gate={_count(gate_params):,} act={_count(act_params):,}")
+
+    return param_groups
+
 
 
 # -------------------------

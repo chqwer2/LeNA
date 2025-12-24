@@ -7,6 +7,8 @@
 #  google/boolq | ybisk/piqa | allenai/social_i_qa | Rowan/hellaswag | allenai/winogrande (winogrande_xl) allenai/ai2_arc (ARC-Easy) allenai/openbookqa (main)
 
 
+conda activate lora
+cd ~/hao/repo/FLoRA/Experiments
 model=meta-llama/Llama-3.2-1B
 dataset=google/boolq
 
@@ -26,7 +28,8 @@ CUDA_VISIBLE_DEVICES=0  python Llama_Dora.py \
   --lora_r 8 \
   --lora_alpha 16 \
   --lora_dropout 0.05 \
-  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
+  --methods lora
 ```
 
 **Note:** LoRA is the default when you do **not** pass `--use_dora`.
@@ -58,41 +61,17 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
 
 ---
 
-# 3) FLoRA training commands (requires script supports `--adapter flora` + FloraConfig)
+# 3) FLoRA training commands
+Below are your **rewritten commands** where **all activation-specific knobs are passed via** `--flora_activation_kwargs_json '...json...'` (instead of `--flora_fourier_terms`, `--flora_spline_knots`, `--flora_poly_degree`, etc.). I also kept your GPU selection via `CUDA_VISIBLE_DEVICES=...`.
 
-## 3.0 Pure LoRA-equivalent FLoRA (activation OFF + gate OFF)
+---
 
-This should behave like standard LoRA (but via your Flora wrappers).
-
-```bash
-python Llama_Dora.py \
-  --adapter flora \
-  --base_model $model \
-  --data_path $dataset \
-  --output_dir runs/flora_pure_lora \
-  --batch_size 1 \
-  --num_epochs 1 \
-  --learning_rate 3e-4 \
-  --cutoff_len 512 \
-  --eval_step 10 \
-  --save_step 100 \
-  --device auto \
-  --lora_r 8 \
-  --lora_alpha 16 \
-  --lora_dropout 0.05 \
-  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --flora_activation identity \
-  --flora_flex_mode channel \
-  --flora_gate_type none
-```
-
-## 3.1 FLoRA + ReLU activation (channel mode), gate OFF
+## 3.1 FLoRA + ReLU (channel), gate OFF
 
 ```bash
-python Llama_Dora.py \
-  --adapter flora \
-  --base_model $model \
-  --data_path $dataset \
+CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+  --base_model "$model" \
+  --data_path "$dataset" \
   --output_dir runs/flora_relu_channel \
   --batch_size 1 \
   --num_epochs 1 \
@@ -103,18 +82,22 @@ python Llama_Dora.py \
   --device auto \
   --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --flora_activation relu \
+  --methods flora \
+  --flora_activations relu \
   --flora_flex_mode channel \
-  --flora_gate_type none
+  --flora_gate_type none \
+  --flora_gate_position after_b \
+  --flora_activation_kwargs_json '{"init_a":0.25}'
 ```
+
+---
 
 ## 3.2 FLoRA + GELU (channel), gate OFF
 
 ```bash
-python Llama_Dora.py \
-  --adapter flora \
-  --base_model $model \
-  --data_path $dataset \
+CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+  --base_model "$model" \
+  --data_path "$dataset" \
   --output_dir runs/flora_gelu_channel \
   --batch_size 1 \
   --num_epochs 1 \
@@ -125,18 +108,24 @@ python Llama_Dora.py \
   --device auto \
   --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --flora_activation gelu \
+  --methods flora \
+  --flora_activations gelu \
   --flora_flex_mode channel \
-  --flora_gate_type none
+  --flora_gate_type none \
+  --flora_gate_position after_b \
+  --flora_activation_kwargs_json '{"init_k":1.0}'
 ```
 
-## 3.3 FLoRA + Fourier (channel), gate OFF
+---
+
+## 3.3 FLoRA + Fourier
+
+### (a) channel, gate OFF
 
 ```bash
-python Llama_Dora.py \
-  --adapter flora \
-  --base_model $model \
-  --data_path $dataset \
+CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+  --base_model "$model" \
+  --data_path "$dataset" \
   --output_dir runs/flora_fourier_channel \
   --batch_size 1 \
   --num_epochs 1 \
@@ -147,19 +136,46 @@ python Llama_Dora.py \
   --device auto \
   --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --flora_activation fourier \
+  --methods flora \
+  --flora_activations fourier \
   --flora_flex_mode channel \
   --flora_gate_type none \
-  --flora_fourier_terms 4
+  --flora_gate_position after_b \
+  --flora_activation_kwargs_json '{"n_terms":4,"init_scale":0.01}'
 ```
+
+### (b) global, gate OFF
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
+  --base_model "$model" \
+  --data_path "$dataset" \
+  --output_dir runs/flora_fourier_global \
+  --batch_size 1 \
+  --num_epochs 1 \
+  --learning_rate 3e-4 \
+  --cutoff_len 512 \
+  --eval_step 10 \
+  --save_step 100 \
+  --device auto \
+  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
+  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
+  --methods flora \
+  --flora_activations fourier \
+  --flora_flex_mode global \
+  --flora_gate_type none \
+  --flora_gate_position after_b \
+  --flora_activation_kwargs_json '{"n_terms":4,"init_scale":0.01}'
+```
+
+---
 
 ## 3.4 FLoRA + Spline (channel), gate OFF
 
 ```bash
-python Llama_Dora.py \
-  --adapter flora \
-  --base_model $model \
-  --data_path $dataset \
+CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+  --base_model "$model" \
+  --data_path "$dataset" \
   --output_dir runs/flora_spline_channel \
   --batch_size 1 \
   --num_epochs 1 \
@@ -170,19 +186,22 @@ python Llama_Dora.py \
   --device auto \
   --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --flora_activation spline \
+  --methods flora \
+  --flora_activations spline \
   --flora_flex_mode channel \
   --flora_gate_type none \
-  --flora_spline_knots 16
+  --flora_gate_position after_b \
+  --flora_activation_kwargs_json '{"n_knots":16,"x_min":-3.0,"x_max":3.0,"init":"identity"}'
 ```
+
+---
 
 ## 3.5 FLoRA + Polynomial (channel), gate OFF
 
 ```bash
-python Llama_Dora.py \
-  --adapter flora \
-  --base_model $model \
-  --data_path $dataset \
+CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+  --base_model "$model" \
+  --data_path "$dataset" \
   --output_dir runs/flora_poly_channel \
   --batch_size 1 \
   --num_epochs 1 \
@@ -193,62 +212,82 @@ python Llama_Dora.py \
   --device auto \
   --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --flora_activation polynomial \
+  --methods flora \
+  --flora_activations polynomial \
   --flora_flex_mode channel \
   --flora_gate_type none \
-  --flora_poly_degree 3
+  --flora_gate_position after_b \
+  --flora_activation_kwargs_json '{"degree":3,"init":"identity","init_scale":0.01}'
 ```
 
 ---
 
 # 4) FLoRA + gate examples (activation can be on or off)
 
+Below I keep Fourier as your example, and still route Fourier params through JSON.
+
 ## 4.1 Gate after A (sigmoid)
 
 ```bash
-python Llama_Dora.py \
-  --adapter flora \
-  --base_model $model \
-  --data_path $dataset \
+CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+  --base_model "$model" \
+  --data_path "$dataset" \
   --output_dir runs/flora_fourier_gate_after_a \
   --batch_size 1 --num_epochs 1 --learning_rate 3e-4 --cutoff_len 512 \
   --eval_step 10 --save_step 100 --device auto \
   --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --flora_activation fourier --flora_flex_mode channel \
-  --flora_gate_type sigmoid --flora_gate_position after_a
+  --methods flora \
+  --flora_activations fourier --flora_flex_mode channel \
+  --flora_gate_type sigmoid --flora_gate_position after_a \
+  --flora_activation_kwargs_json '{"n_terms":4,"init_scale":0.01}'
 ```
 
 ## 4.2 Gate after B (sigmoid)
 
 ```bash
-python Llama_Dora.py \
-  --adapter flora \
-  --base_model $model \
-  --data_path $dataset \
+CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+  --base_model "$model" \
+  --data_path "$dataset" \
   --output_dir runs/flora_fourier_gate_after_b \
   --batch_size 1 --num_epochs 1 --learning_rate 3e-4 --cutoff_len 512 \
   --eval_step 10 --save_step 100 --device auto \
   --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --flora_activation fourier --flora_flex_mode channel \
-  --flora_gate_type sigmoid --flora_gate_position after_b
+  --methods flora \
+  --flora_activations fourier --flora_flex_mode channel \
+  --flora_gate_type sigmoid --flora_gate_position after_b \
+  --flora_activation_kwargs_json '{"n_terms":4,"init_scale":0.01}'
 ```
 
 ## 4.3 Gate both (sigmoid)
 
 ```bash
-python Llama_Dora.py \
-  --adapter flora \
-  --base_model $model \
-  --data_path $dataset \
+CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+  --base_model "$model" \
+  --data_path "$dataset" \
   --output_dir runs/flora_fourier_gate_both \
   --batch_size 1 --num_epochs 1 --learning_rate 3e-4 --cutoff_len 512 \
   --eval_step 10 --save_step 100 --device auto \
   --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --flora_activation fourier --flora_flex_mode channel \
-  --flora_gate_type sigmoid --flora_gate_position both
+  --methods flora \
+  --flora_activations fourier --flora_flex_mode channel \
+  --flora_gate_type sigmoid --flora_gate_position both \
+  --flora_activation_kwargs_json '{"n_terms":4,"init_scale":0.01}'
+```
+
+---
+
+### Notes (so your JSON matches your activation code)
+
+* **fourier** supports: `n_terms`, `init_scale`, plus whatever else your `FlexFourier.__init__` takes.
+* **spline** supports: `n_knots`, `x_min`, `x_max`, `init`, etc.
+* **polynomial** supports: `degree`, `init`, `init_scale`, etc.
+* If you switch to `flora_flex_mode spatial` or `voxel`, you’ll also want JSON like `{"max_h":512,"max_w":1,...}` so variable sequence lengths can slice safely.
+
+If you paste your exact `FlexFourier/FlexSpline/FlexPolynomial` `__init__` signatures (you already pasted most of it), I can align the JSON keys 1:1 with what your implementation actually accepts.
+
 ```
 
 ---
