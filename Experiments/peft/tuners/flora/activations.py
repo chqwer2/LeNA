@@ -193,10 +193,7 @@ class FlexFourier(nn.Module):
             shape = base + (self.n_terms,)
 
             # IMPORTANT: identity init => residual amplitude == 0
-            if self.init_scale == 0.0:
-                a = torch.zeros(shape, device=x.device, dtype=x.dtype)
-            else:
-                a = torch.empty(shape, device=x.device, dtype=x.dtype).normal_(0.0, self.init_scale)
+            a = torch.empty(shape, device=x.device, dtype=x.dtype).normal_(0.0, self.init_scale)
 
             w = torch.full(shape, self.init_w, device=x.device, dtype=x.dtype)
             p = torch.full(shape, self.init_p, device=x.device, dtype=x.dtype)
@@ -256,6 +253,7 @@ class FlexSpline(nn.Module):
         self.init = init
         self.max_h = max_h
         self.max_w = max_w
+        self.init_eps = 1e-3
 
         self.register_buffer("knots_x", torch.linspace(self.x_min, self.x_max, steps=self.n_knots))
         self.knots_y: Optional[nn.Parameter] = None
@@ -337,6 +335,8 @@ class FlexPolynomial(nn.Module):
         self.init = init
         self.max_h = max_h
         self.max_w = max_w
+        self.init_scale = 1e-3
+
 
         self.c: Optional[nn.Parameter] = None
         self._C: Optional[int] = None

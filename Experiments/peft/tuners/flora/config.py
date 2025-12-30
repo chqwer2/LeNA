@@ -27,9 +27,10 @@ class FloraConfig(LoraConfig):
     # gating
     flora_gate_type: FloraGateType = "none"
     flora_gate_position: FloraGatePos = "after_b"
-    flora_gate_mode_after_a: FloraGateMode = "global"
-    flora_gate_mode_after_b: FloraGateMode = "global"
-    flora_gate_init: float = -6.0
+    flora_gate_mode: FloraGateMode = "global"
+    flora_gate_init: float = 1
+    flora_gate_mode = flora_gate_mode,
+    gate_strength = "soft"  # Literal["soft", "hard"] = "soft"
 
     # merge
     allow_merge: bool = False

@@ -32,7 +32,7 @@ from peft import FloraConfig
 preferred_dir = "/Users/haochen/Documents/hf_models"
 fallback_dir = "/media/cbtil3/9feaf350-913e-4def-8114-f03573c04364"
 cache_dir = preferred_dir if os.path.isdir(preferred_dir) else fallback_dir
-
+DEBUG = False
 
 # -------------------------
 # Device helpers
@@ -376,6 +376,8 @@ def build_peft_config(
     flora_gate_type: str,
     flora_gate_position: str,
     flora_debug: bool = False,
+    flora_gate_mode="global",
+    gate_strength="hard",
 ):
     method = method.lower()
     if method in ("lora", "dora"):
@@ -403,6 +405,8 @@ def build_peft_config(
             flora_debug_verbose=False,
             flora_debug_forward=False,
             flora_debug_check_nan=True,
+            flora_gate_mode=flora_gate_mode,
+            gate_strength=gate_strength,
         )
 
     raise ValueError(f"Unknown method: {method}")
@@ -414,7 +418,7 @@ from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
 def build_grouped_optimizer(
     model,
     base_lr: float,
-    act_lr_mult: float = 0.1,     # activation LR = base_lr * act_lr_mult
+    act_lr_mult: float = 0.5,     # activation LR = base_lr * act_lr_mult
     gate_lr_mult: float = 0.5,    # gate LR = base_lr * gate_lr_mult
     weight_decay: float = 0.01,
     betas=(0.9, 0.95),
@@ -481,27 +485,30 @@ def build_grouped_optimizer(
     return optimizer
 
 import numpy as np
+
+
+def preprocess_logits_for_metrics(logits, labels):
+    # logits can be a tuple for some models
+    if isinstance(logits, tuple):
+        logits = logits[0]
+    return torch.argmax(logits, dim=-1)  # [bs, seq]
+
 def compute_metrics(eval_pred):
-    logits, labels = eval_pred
-    # logits: [batch, seq, vocab]
-    # labels: [batch, seq]
+    preds, labels = eval_pred  # preds: [bs, seq] int, labels: [bs, seq]
 
-    # next-token prediction: compare logits at t-1 to label at t
-    preds = np.argmax(logits, axis=-1)
-
-    # shift so we're evaluating next-token accuracy
+    # shift for next-token accuracy
     shift_preds = preds[:, :-1]
     shift_labels = labels[:, 1:]
 
-    # ignore -100 labels (if any)
     mask = shift_labels != -100
-    if mask.sum() == 0:
+    denom = mask.sum()
+    if denom == 0:
         return {"token_acc": 0.0}
 
     correct = (shift_preds == shift_labels) & mask
-    token_acc = correct.sum() / mask.sum()
-
+    token_acc = correct.sum() / denom
     return {"token_acc": float(token_acc)}
+
 
 
 def debug_trainables(model, method: str, topn_layers: int = 10):
@@ -661,6 +668,8 @@ def train_one_run(
 
     push_to_hub: bool,
     hub_model_id: str,
+    flora_gate_mode,
+    gate_strength,
 ):
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     hf_token = os.getenv("HF_TOKEN")
@@ -727,6 +736,8 @@ def train_one_run(
         flora_gate_type=flora_gate_type,
         flora_gate_position=flora_gate_position,
         flora_debug=False,
+        flora_gate_mode=flora_gate_mode,
+        gate_strength=gate_strength,
     )
 
     # Wrap model
@@ -746,6 +757,8 @@ def train_one_run(
         ids = ids.to(device)
         attn = (ids != pad_id).to(device)
         _ = model(input_ids=ids, attention_mask=attn)
+
+    model.to(device)
 
     # Freeze everything except flora params if requested
     if method.lower() == "flora":
@@ -808,17 +821,20 @@ def train_one_run(
         eps=1e-8,
     )
 
-    DEBUG = False 
+
     if DEBUG:
         tr_n = min(20, len(tokenized["train"]))
-        ev_n = min(100, len(tokenized["test"]))
+        ev_n = min(3200, len(tokenized["test"]))
 
         train_dataset = tokenized["train"].select(range(tr_n))
-        eval_dataset = tokenized["test"].select(range(ev_n))
+        eval_dataset  = tokenized["test"].select(range(ev_n))
 
     else:
         train_dataset = tokenized["train"]
-        eval_dataset = tokenized["test"]
+        eval_dataset  = tokenized["test"]
+
+    print(f"Training dataset={len(train_dataset)}")
+    print(f"Evaluation dataset={len(eval_dataset)}")
 
     trainer = Trainer(
         model=model,
@@ -826,8 +842,9 @@ def train_one_run(
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         data_collator=data_collator,
-        optimizers=(optimizer, None),
+        # optimizers=(optimizer, None),
         compute_metrics=compute_metrics,  # <-- add this
+        preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     )
 
     trainer.train()
@@ -930,6 +947,7 @@ def build_optimizer_param_groups(
 # Multi-run driver: compare lora/dora/flora variants
 # -------------------------
 def run_experiments(
+    args,
     base_model: str,
     data_path: str,
     data_name: Optional[str],
@@ -940,6 +958,8 @@ def run_experiments(
     flora_activation_kwargs_json: str,
     flora_gate_type: str,
     flora_gate_position: str,
+    flora_gate_mode="global",
+    gate_strength="soft",
     **kwargs,
 ):
     method_list = [m.strip() for m in methods.split(",") if m.strip()]
@@ -968,6 +988,14 @@ def run_experiments(
         elif m.lower() == "flora":
             for act in flora_act_list:
                 tag = f"flora_{act}_{flora_flex_mode}_{flora_gate_type}_{flora_gate_position}"
+                if "gate_strength" in flora_activation_kwargs_json:
+                    if "hard" in flora_activation_kwargs_json:
+                        tag += "_hard"
+                    else:
+                        tag += "_soft"
+
+                print("experiment tag:", tag)
+
                 out = os.path.join(output_dir, tag)
 
                 train_one_run(
@@ -981,6 +1009,8 @@ def run_experiments(
                     flora_activation_kwargs_json=flora_activation_kwargs_json,
                     flora_gate_type=flora_gate_type,
                     flora_gate_position=flora_gate_position,
+                    flora_gate_mode=flora_gate_mode,
+                    gate_strength=gate_strength,
                     **kwargs,
                 )
                 runs.append(out)
@@ -1036,6 +1066,14 @@ if __name__ == "__main__":
                         help="none|sigmoid|tanh|rezero")
     parser.add_argument("--flora_gate_position", type=str, default="after_b",
                         help="after_a|after_b|both")
+    parser.add_argument(
+        "--flora_gate_mode",
+        type=str,
+        default="global",
+        choices=["global", "spatial", "channel", "voxel"],
+        help="Gate mode for position after_a",
+    )
+    parser.add_argument("--gate_strength", type=str, default="soft",)
 
     parser.add_argument("--only_train_flora_params", action="store_true")
     parser.add_argument("--print_forward_mean_ms", action="store_true")
@@ -1046,6 +1084,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     run_experiments(
+        args=args,
         base_model=args.base_model,
         data_path=args.data_path,
         data_name=args.data_name.strip() or None,
@@ -1074,4 +1113,6 @@ if __name__ == "__main__":
         hub_model_id=args.hub_model_id,
         only_train_flora_params=args.only_train_flora_params,
         print_forward_mean_ms=args.print_forward_mean_ms,
+        flora_gate_mode=args.flora_gate_mode,
+        gate_strength=args.gate_strength,
     )

@@ -128,32 +128,34 @@ class FloraLinear(nn.Module):
         # gates (can be identity)
         gate_type = str(getattr(cfg, "flora_gate_type", "none")).lower()
         gate_pos = str(getattr(cfg, "flora_gate_position", "after_b")).lower()
-        gate_init = float(getattr(cfg, "flora_gate_init", -6.0))
+        gate_init = float(getattr(cfg, "flora_gate_init", 1))
         init_a = 0.0 if gate_type == "rezero" else gate_init
         init_b = 0.0 if gate_type == "rezero" else gate_init
+        mode = str(getattr(cfg, "flora_gate_mode", "global")).lower()
+        gate_strength = str(getattr(cfg, "gate_strength", "soft")).lower()
 
         if gate_type != "none" and gate_pos in ("after_a", "both"):
-            mode_a = getattr(cfg, "flora_gate_mode_after_a", "global")
+
             self.gate_after_a[adapter_name] = Gate(
                 gate_type=gate_type,  # type: ignore[arg-type]
-                gate_mode=mode_a,
-                n_features=r if mode_a == "per_dim" else None,
+                gate_mode=mode,
                 init=init_a,
                 dtype=A.weight.dtype,
                 device=A.weight.device,
+                gate_strength=gate_strength
             )
         else:
             self.gate_after_a[adapter_name] = nn.Identity()
 
         if gate_type != "none" and gate_pos in ("after_b", "both"):
-            mode_b = getattr(cfg, "flora_gate_mode_after_b", "global")
+
             self.gate_after_b[adapter_name] = Gate(
                 gate_type=gate_type,  # type: ignore[arg-type]
-                gate_mode=mode_b,
-                n_features=self.out_features if mode_b == "per_dim" else None,
+                gate_mode=mode,
                 init=init_b,
                 dtype=B.weight.dtype,
                 device=B.weight.device,
+                gate_strength=gate_strength
             )
         else:
             self.gate_after_b[adapter_name] = nn.Identity()

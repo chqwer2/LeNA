@@ -19,7 +19,7 @@ CUDA_VISIBLE_DEVICES=0  python Llama_Dora.py \
   --data_path $dataset \
   --output_dir runs/lora \
   --batch_size 1 \
-  --num_epochs 1 \
+  --num_epochs 3 \
   --learning_rate 3e-4 \
   --cutoff_len 512 \
   --eval_step 10 \
@@ -32,11 +32,36 @@ CUDA_VISIBLE_DEVICES=0  python Llama_Dora.py \
   --methods lora
 ```
 
-**Note:** LoRA is the default when you do **not** pass `--use_dora`.
-
 ---
 
+## 3.2 Gate LoRA
 
+
+```bash
+strength="soft"
+strength="hard"
+
+
+CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
+  --base_model "$model" \
+  --data_path "$dataset" \
+  --output_dir runs/flora_gelu_channel \
+  --batch_size 1 \
+  --num_epochs 3 \
+  --learning_rate 3e-4 \
+  --cutoff_len 512 \
+  --eval_step 10 \
+  --save_step 100 \
+  --device auto \
+  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
+  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
+  --methods flora \
+  --flora_activations identity \
+  --flora_flex_mode channel \
+  --flora_gate_type sigmoid \
+  --flora_gate_position after_b \
+  --flora_gate_mode_after_b "voxel" \
+  --flora_activation_kwargs_json '{"init":1.0, "gate_strength":"'${strength}'"}'
 
 # 2) DoRA training command (your script already supports this)
 
@@ -46,7 +71,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --data_path $dataset \
   --output_dir runs/dora \
   --batch_size 1 \
-  --num_epochs 1 \
+  --num_epochs 3 \
   --learning_rate 3e-4 \
   --cutoff_len 512 \
   --eval_step 10 \
@@ -59,12 +84,13 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --methods dora
 ```
 
----
+-----
 
 # 3) FLoRA training commands
 Below are your **rewritten commands** where **all activation-specific knobs are passed via** `--flora_activation_kwargs_json '...json...'` (instead of `--flora_fourier_terms`, `--flora_spline_knots`, `--flora_poly_degree`, etc.). I also kept your GPU selection via `CUDA_VISIBLE_DEVICES=...`.
 
----
+
+-----
 
 ## 3.1 FLoRA + ReLU (channel), gate OFF
 
@@ -74,7 +100,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --data_path "$dataset" \
   --output_dir runs/flora_relu_channel \
   --batch_size 1 \
-  --num_epochs 1 \
+  --num_epochs 3 \
   --learning_rate 3e-4 \
   --cutoff_len 512 \
   --eval_step 10 \
@@ -100,7 +126,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --data_path "$dataset" \
   --output_dir runs/flora_gelu_channel \
   --batch_size 1 \
-  --num_epochs 1 \
+  --num_epochs 3 \
   --learning_rate 3e-4 \
   --cutoff_len 512 \
   --eval_step 10 \
@@ -123,12 +149,13 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
 ### (a) channel, gate OFF
 
 ```bash
+strength=soft
 CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_channel \
   --batch_size 1 \
-  --num_epochs 1 \
+  --num_epochs 3 \
   --learning_rate 3e-4 \
   --cutoff_len 512 \
   --eval_step 10 \
@@ -139,8 +166,10 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --methods flora \
   --flora_activations fourier \
   --flora_flex_mode channel \
-  --flora_gate_type none \
+  --flora_gate_type sigmoid \
   --flora_gate_position after_b \
+  --flora_gate_mode "voxel" \
+  --gate_strength ${strength} \
   --flora_activation_kwargs_json '{"n_terms":4,"init_scale":0.01}'
 ```
 
@@ -152,7 +181,7 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_global \
   --batch_size 1 \
-  --num_epochs 1 \
+  --num_epochs 3 \
   --learning_rate 3e-4 \
   --cutoff_len 512 \
   --eval_step 10 \
@@ -173,12 +202,12 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
 ## 3.4 FLoRA + Spline (channel), gate OFF
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_spline_channel \
   --batch_size 1 \
-  --num_epochs 1 \
+  --num_epochs 3 \
   --learning_rate 3e-4 \
   --cutoff_len 512 \
   --eval_step 10 \
@@ -204,7 +233,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --data_path "$dataset" \
   --output_dir runs/flora_poly_channel \
   --batch_size 1 \
-  --num_epochs 1 \
+  --num_epochs 3 \
   --learning_rate 3e-4 \
   --cutoff_len 512 \
   --eval_step 10 \
@@ -217,7 +246,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --flora_flex_mode channel \
   --flora_gate_type none \
   --flora_gate_position after_b \
-  --flora_activation_kwargs_json '{"degree":3,"init":"identity","init_scale":0.01}'
+  --flora_activation_kwargs_json '{"degree":3,"init":"identity"}'
 ```
 
 ---
@@ -233,7 +262,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_gate_after_a \
-  --batch_size 1 --num_epochs 1 --learning_rate 3e-4 --cutoff_len 512 \
+  --batch_size 1 --num_epochs 3 --learning_rate 3e-4 --cutoff_len 512 \
   --eval_step 10 --save_step 100 --device auto \
   --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
@@ -250,7 +279,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_gate_after_b \
-  --batch_size 1 --num_epochs 1 --learning_rate 3e-4 --cutoff_len 512 \
+  --batch_size 1 --num_epochs 3 --learning_rate 3e-4 --cutoff_len 512 \
   --eval_step 10 --save_step 100 --device auto \
   --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
@@ -267,7 +296,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_gate_both \
-  --batch_size 1 --num_epochs 1 --learning_rate 3e-4 --cutoff_len 512 \
+  --batch_size 1 --num_epochs 3 --learning_rate 3e-4 --cutoff_len 512 \
   --eval_step 10 --save_step 100 --device auto \
   --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
