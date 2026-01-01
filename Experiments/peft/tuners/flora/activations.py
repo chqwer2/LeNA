@@ -62,11 +62,10 @@ def _param_base_shape(
     if mode == "channel":
         return (1, 1, C)
     if mode == "spatial":
-        max_h, max_w = _require_max_hw(mode, max_h, max_w)
-        return (int(max_h), int(max_w), 1)
+        return (int(H), int(W), 1)
     if mode == "voxel":
         max_h, max_w = _require_max_hw(mode, max_h, max_w)
-        return (int(max_h), int(max_w), C)
+        return (int(H), int(W), C)
     raise ValueError(f"Unknown flex mode: {mode}")
 
 

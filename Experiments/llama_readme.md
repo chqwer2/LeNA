@@ -1,10 +1,25 @@
 
+pip install "datasets<4.0.0" "huggingface_hub<0.24"
+
+pip install transformers -U`
 
 # 1) LoRA training command (your script already supports this)
 
 # huggyllama/llama-7b | microsoft/phi-2  | meta-llama/Llama-3.2-1B  | meta-llama/Llama-3.2-3B
  
-#  google/boolq | ybisk/piqa | allenai/social_i_qa | Rowan/hellaswag | allenai/winogrande (winogrande_xl) allenai/ai2_arc (ARC-Easy) allenai/openbookqa (main)
+#  google/boolq | piqa | allenai/social_i_qa | Rowan/hellaswag | allenai/winogrande (winogrande_xl) allenai/ai2_arc (ARC-Easy) allenai/openbookqa (main)
+
+
+dataset=piqa
+
+ds = load_dataset("piqa")                       # no config
+ds = load_dataset("social_i_qa")                # no config
+ds = load_dataset("hellaswag")                  # no config
+ds = load_dataset("winogrande", "winogrande_xl")
+ds = load_dataset("ai2_arc", "ARC-Easy")
+ds = load_dataset("openbookqa", "main")
+ds = load_dataset("google/boolq")
+
 
 
 conda activate lora
@@ -146,11 +161,12 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
 
 ## 3.3 FLoRA + Fourier
 
-### (a) channel, gate OFF
+### (a) channel, gate 
 
 ```bash
 strength=soft
-CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+strength=hard
+CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_channel \
@@ -168,7 +184,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --flora_flex_mode channel \
   --flora_gate_type sigmoid \
   --flora_gate_position after_b \
-  --flora_gate_mode "voxel" \
+  --flora_gate_mode "channel" \
   --gate_strength ${strength} \
   --flora_activation_kwargs_json '{"n_terms":4,"init_scale":0.01}'
 ```
@@ -176,7 +192,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
 ### (b) global, gate OFF
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_global \
@@ -191,7 +207,7 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
   --methods flora \
   --flora_activations fourier \
-  --flora_flex_mode global \
+  --flora_flex_mode voxel \
   --flora_gate_type none \
   --flora_gate_position after_b \
   --flora_activation_kwargs_json '{"n_terms":4,"init_scale":0.01}'
@@ -228,25 +244,7 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
 ## 3.5 FLoRA + Polynomial (channel), gate OFF
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
-  --base_model "$model" \
-  --data_path "$dataset" \
-  --output_dir runs/flora_poly_channel \
-  --batch_size 1 \
-  --num_epochs 3 \
-  --learning_rate 3e-4 \
-  --cutoff_len 512 \
-  --eval_step 10 \
-  --save_step 100 \
-  --device auto \
-  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
-  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --methods flora \
-  --flora_activations polynomial \
-  --flora_flex_mode channel \
-  --flora_gate_type none \
-  --flora_gate_position after_b \
-  --flora_activation_kwargs_json '{"degree":3,"init":"identity"}'
+
 ```
 
 ---

@@ -207,8 +207,9 @@ def format_example_to_text(data_path: str, ex: Dict[str, Any]) -> str:
     if "text" in ex and isinstance(ex["text"], str):
         return ex["text"]
 
+    ex = dict(ex)
     # Otherwise just dump something readable
-    return "### Example\n" + json.dumps(ex, ensure_ascii=False)
+    return "### Example\n" + json.dumps(ex, ensure_ascii=False, default=str)
 
 
 def add_text_column(dataset: DatasetDict, data_path: str) -> DatasetDict:
@@ -668,8 +669,8 @@ def train_one_run(
 
     push_to_hub: bool,
     hub_model_id: str,
-    flora_gate_mode,
-    gate_strength,
+    flora_gate_mode="global",
+    gate_strength="hard",
 ):
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     hf_token = os.getenv("HF_TOKEN")
@@ -1101,7 +1102,25 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         cutoff_len=args.cutoff_len,
         val_set_size=args.val_set_size,
-        quantize=args.quantize,
+        quantize=args.quantize,CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+  --base_model "$model" \
+  --data_path "$dataset" \
+  --output_dir runs/flora_poly_channel \
+  --batch_size 1 \
+  --num_epochs 3 \
+  --learning_rate 3e-4 \
+  --cutoff_len 512 \
+  --eval_step 10 \
+  --save_step 100 \
+  --device auto \
+  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
+  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
+  --methods flora \
+  --flora_activations polynomial \
+  --flora_flex_mode channel \
+  --flora_gate_type none \
+  --flora_gate_position after_b \
+  --flora_activation_kwargs_json '{"degree":3,"init":"identity"}'
         eval_step=args.eval_step,
         save_step=args.save_step,
         device_arg=args.device,
