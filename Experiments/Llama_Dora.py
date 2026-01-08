@@ -1102,25 +1102,7 @@ if __name__ == "__main__":
         learning_rate=args.learning_rate,
         cutoff_len=args.cutoff_len,
         val_set_size=args.val_set_size,
-        quantize=args.quantize,CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
-  --base_model "$model" \
-  --data_path "$dataset" \
-  --output_dir runs/flora_poly_channel \
-  --batch_size 1 \
-  --num_epochs 3 \
-  --learning_rate 3e-4 \
-  --cutoff_len 512 \
-  --eval_step 10 \
-  --save_step 100 \
-  --device auto \
-  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
-  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --methods flora \
-  --flora_activations polynomial \
-  --flora_flex_mode channel \
-  --flora_gate_type none \
-  --flora_gate_position after_b \
-  --flora_activation_kwargs_json '{"degree":3,"init":"identity"}'
+        quantize=args.quantize,
         eval_step=args.eval_step,
         save_step=args.save_step,
         device_arg=args.device,

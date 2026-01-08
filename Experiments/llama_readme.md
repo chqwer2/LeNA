@@ -182,11 +182,11 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
   --methods flora \
   --flora_activations fourier \
   --flora_flex_mode channel \
-  --flora_gate_type sigmoid \
+  --flora_gate_type none \
   --flora_gate_position after_b \
   --flora_gate_mode "channel" \
   --gate_strength ${strength} \
-  --flora_activation_kwargs_json '{"n_terms":4,"init_scale":0.01}'
+  --flora_activation_kwargs_json '{"n_terms":4,"init_scale":0.01, "use_gate": "hard"}'
 ```
 
 ### (b) global, gate OFF
