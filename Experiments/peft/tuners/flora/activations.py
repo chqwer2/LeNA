@@ -160,6 +160,20 @@ class FlexGELU(nn.Module):
         return 0.5 * x * (1.0 + torch.tanh(u))
 
 
+
+# -------------------------
+# straight-through helpers
+# -------------------------
+def _hard_sigmoid_st(p:torch.Tensor) -> torch.Tensor:
+    soft = torch.sigmoid(p)
+    hard = (soft >= 0.5).to(soft.dtype)
+    return hard.detach() - soft.detach() + soft
+
+def _hard_rezero_st(p: torch.Tensor) -> torch.Tensor:
+    hard = (p > 0).to(p.dtype)
+    return hard.detach() - p.detach() + p
+
+
 class FlexFourier(nn.Module):
     kind = "fourier"
 
@@ -170,6 +184,7 @@ class FlexFourier(nn.Module):
         init_scale: float = 0.01,
         max_h: Optional[int] = None,
         max_w: Optional[int] = None,
+        use_gate: str = "none", # ["soft", "hard", "none", "residual"]
     ):
         super().__init__()
         self.mode = mode
@@ -184,6 +199,9 @@ class FlexFourier(nn.Module):
         self.w: Optional[nn.Parameter] = None
         self.p: Optional[nn.Parameter] = None
         self._C: Optional[int] = None
+
+        self.use_gate = use_gate
+        self.init_t = 1
 
     def _maybe_init(self, x: torch.Tensor):
         H, W, C = _infer_hwc(x)
@@ -201,6 +219,13 @@ class FlexFourier(nn.Module):
             self.w = nn.Parameter(w)
             self.p = nn.Parameter(p)
             self._C = C
+
+            if self.use_gate != "none":
+                # scale amplitudes to zero initially
+                self.t = nn.Parameter(
+                    torch.full(shape, self.init_t, dtype=x.dtype, device=x.device)
+                )
+
         else:
             if self.mode in ("channel", "voxel") and self._C is not None and C != self._C:
                 raise ValueError(f"Channel size C changed from {self._C} to {C} for mode='{self.mode}'.")
@@ -228,8 +253,19 @@ class FlexFourier(nn.Module):
             p = p.unsqueeze(0)
 
         residual = (a * torch.sin(w * x_e + p)).sum(dim=-1)  # [..., H, W, C]
-        return x + residual  # <-- identity at init when a==0
 
+        if self.use_gate != "none":
+            return residual
+        elif self.use_gate == "residual":
+            return x + residual  # <-- identity at init when a==0
+        else:
+            p = self.t
+            if self.use_gate == "soft":
+                gate = torch.sigmoid(p)
+            elif self.use_gate == "hard":
+                gate = self._hard_sigmoid_st(p)
+
+            return residual * gate + x * (1 - gate)
 
 class FlexSpline(nn.Module):
     kind = "spline"
@@ -243,6 +279,7 @@ class FlexSpline(nn.Module):
         init: Literal["identity", "zero"] = "identity",
         max_h: Optional[int] = None,
         max_w: Optional[int] = None,
+        use_gate: str = "none",  # ["soft", "hard", "none"]
     ):
         super().__init__()
         self.mode = mode
@@ -257,6 +294,9 @@ class FlexSpline(nn.Module):
         self.register_buffer("knots_x", torch.linspace(self.x_min, self.x_max, steps=self.n_knots))
         self.knots_y: Optional[nn.Parameter] = None
         self._C: Optional[int] = None
+
+        self.use_gate = use_gate
+        self.init_t = 1
 
     def _maybe_init(self, x: torch.Tensor):
         H, W, C = _infer_hwc(x)
@@ -276,6 +316,13 @@ class FlexSpline(nn.Module):
 
             self.knots_y = nn.Parameter(ky)
             self._C = C
+
+            if self.use_gate != "none":
+                # scale amplitudes to zero initially
+                self.t = nn.Parameter(
+                    torch.full(shape, self.init_t, dtype=x.dtype, device=x.device)
+                )
+
         else:
             if self.mode in ("channel", "voxel") and self._C is not None and C != self._C:
                 raise ValueError(f"Channel size C changed from {self._C} to {C} for mode='{self.mode}'.")
@@ -314,7 +361,24 @@ class FlexSpline(nn.Module):
         y1 = torch.gather(ky, dim=-1, index=(idx + 1).unsqueeze(-1)).squeeze(-1)
 
         t = (x_clamped - x0) / (x1 - x0 + 1e-12)
-        return y0 + t * (y1 - y0)
+        residual = t * (y1 - y0)
+
+        if self.use_gate != "none":
+            return residual
+        elif self.use_gate == "residual":
+            return y0 + residual  # <-- identity at init when a==0
+        else:
+            p = self.t
+            if self.use_gate == "soft":
+                gate = torch.sigmoid(p)
+            elif self.use_gate == "hard":
+                gate = self._hard_sigmoid_st(p)
+
+            return residual * gate + y0 * (1 - gate)
+
+
+
+        # return y0 + t * (y1 - y0)
 
 
 class FlexPolynomial(nn.Module):
@@ -327,6 +391,7 @@ class FlexPolynomial(nn.Module):
         init: Literal["identity", "zero"] = "identity",
         max_h: Optional[int] = None,
         max_w: Optional[int] = None,
+        use_gate: str = "none",  # ["soft", "hard", "none"]
     ):
         super().__init__()
         self.mode = mode
@@ -339,6 +404,9 @@ class FlexPolynomial(nn.Module):
 
         self.c: Optional[nn.Parameter] = None
         self._C: Optional[int] = None
+
+        self.use_gate = use_gate
+        self.init_t = 1
 
     def _maybe_init(self, x: torch.Tensor):
         H, W, C = _infer_hwc(x)
@@ -360,9 +428,18 @@ class FlexPolynomial(nn.Module):
 
             self.c = nn.Parameter(c)
             self._C = C
+
+            if self.use_gate != "none":
+                # scale amplitudes to zero initially
+                self.t = nn.Parameter(
+                    torch.full(shape, self.init_t, dtype=x.dtype, device=x.device)
+                )
+
+
         else:
             if self.mode in ("channel", "voxel") and self._C is not None and C != self._C:
                 raise ValueError(f"Channel size C changed from {self._C} to {C} for mode='{self.mode}'.")
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         self._maybe_init(x)
@@ -383,7 +460,23 @@ class FlexPolynomial(nn.Module):
         y = c[..., -1]
         for k in range(self.degree - 1, -1, -1):
             y = y * x + c[..., k]
-        return y
+
+        residual = y
+
+        if self.use_gate != "none":
+            return residual
+        elif self.use_gate == "residual":
+            return x + residual  # <-- identity at init when a==0
+        else:
+            p = self.t
+            if self.use_gate == "soft":
+                gate = torch.sigmoid(p)
+            elif self.use_gate == "hard":
+                gate = self._hard_sigmoid_st(p)
+
+            return residual * gate + x * (1 - gate)
+
+        # return y
 
 
 # -----------------------
