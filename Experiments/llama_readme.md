@@ -24,12 +24,16 @@ ds = load_dataset("google/boolq")
 
 conda activate lora
 cd ~/hao/repo/FLoRA/Experiments
-model=meta-llama/Llama-3.2-1B
+model=meta-llama/Llama-3.2-1B     # Test
+
+
+
+
 dataset=google/boolq
 
 
 ```bash
-CUDA_VISIBLE_DEVICES=0  python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=0  python Llama_Adaptation.py \
   --base_model $model \
   --data_path $dataset \
   --output_dir runs/lora \
@@ -57,7 +61,7 @@ strength="soft"
 strength="hard"
 
 
-CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_gelu_channel \
@@ -81,7 +85,7 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
 # 2) DoRA training command (your script already supports this)
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --base_model $model \
   --data_path $dataset \
   --output_dir runs/dora \
@@ -110,7 +114,7 @@ Below are your **rewritten commands** where **all activation-specific knobs are 
 ## 3.1 FLoRA + ReLU (channel), gate OFF
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_relu_channel \
@@ -136,7 +140,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
 ## 3.2 FLoRA + GELU (channel), gate OFF
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_gelu_channel \
@@ -166,7 +170,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
 ```bash
 strength=soft
 strength=hard
-CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_channel \
@@ -181,18 +185,20 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
   --methods flora \
   --flora_activations fourier \
-  --flora_flex_mode channel \
+  --flora_flex_mode "channel" \
   --flora_gate_type none \
   --flora_gate_position after_b \
   --flora_gate_mode "channel" \
   --gate_strength ${strength} \
-  --flora_activation_kwargs_json '{"n_terms":4,"init_scale":0.01, "use_gate": "hard"}'
+  --flora_activation_kwargs_json '{"n_terms":5,"init_scale":0.01, "use_gate": "soft"}'
 ```
+
+
 
 ### (b) global, gate OFF
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_global \
@@ -218,7 +224,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
 ## 3.4 FLoRA + Spline (channel), gate OFF
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_spline_channel \
@@ -236,7 +242,7 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
   --flora_flex_mode channel \
   --flora_gate_type none \
   --flora_gate_position after_b \
-  --flora_activation_kwargs_json '{"n_knots":16,"x_min":-3.0,"x_max":3.0,"init":"identity"}'
+  --flora_activation_kwargs_json '{"n_knots":16,"x_min":-3.0,"x_max":3.0,"init":"identity", "use_gate": "hard"}'
 ```
 
 ---
@@ -244,7 +250,25 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Dora.py \
 ## 3.5 FLoRA + Polynomial (channel), gate OFF
 
 ```bash
-
+CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
+  --base_model "$model" \
+  --data_path "$dataset" \
+  --output_dir runs/flora_poly_channel \
+  --batch_size 1 \
+  --num_epochs 3 \
+  --learning_rate 3e-4 \
+  --cutoff_len 512 \
+  --eval_step 10 \
+  --save_step 100 \
+  --device auto \
+  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
+  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
+  --methods flora \
+  --flora_activations polynomial \
+  --flora_flex_mode channel \
+  --flora_gate_type none \
+  --flora_gate_position after_b \
+  --flora_activation_kwargs_json '{"degree":3,"init":"identity", "use_gate": "hard"}'
 ```
 
 ---
@@ -256,7 +280,7 @@ Below I keep Fourier as your example, and still route Fourier params through JSO
 ## 4.1 Gate after A (sigmoid)
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_gate_after_a \
@@ -273,7 +297,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
 ## 4.2 Gate after B (sigmoid)
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_gate_after_b \
@@ -290,7 +314,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
 ## 4.3 Gate both (sigmoid)
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Dora.py \
+CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_gate_both \
