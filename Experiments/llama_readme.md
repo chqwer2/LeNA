@@ -9,16 +9,15 @@ pip install transformers -U`
  
 #  google/boolq | piqa | allenai/social_i_qa | Rowan/hellaswag | allenai/winogrande (winogrande_xl) allenai/ai2_arc (ARC-Easy) allenai/openbookqa (main)
 
-
+dataset=google/boolq
 dataset=piqa
 
-ds = load_dataset("piqa")                       # no config
+                   # no config
 ds = load_dataset("social_i_qa")                # no config
 ds = load_dataset("hellaswag")                  # no config
 ds = load_dataset("winogrande", "winogrande_xl")
 ds = load_dataset("ai2_arc", "ARC-Easy")
 ds = load_dataset("openbookqa", "main")
-ds = load_dataset("google/boolq")
 
 
 
@@ -26,10 +25,13 @@ conda activate lora
 cd ~/hao/repo/FLoRA/Experiments
 model=meta-llama/Llama-3.2-1B     # Test
 
-
-
+model=meta-llama/Llama-2-7b-hf
+model=meta-llama/Llama-2-13b-hf
+model=huggyllama/llama-7b
+model=meta-llama/Meta-Llama-3-8B    # Test
 
 dataset=google/boolq
+
 
 
 ```bash
@@ -108,59 +110,6 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
 # 3) FLoRA training commands
 Below are your **rewritten commands** where **all activation-specific knobs are passed via** `--flora_activation_kwargs_json '...json...'` (instead of `--flora_fourier_terms`, `--flora_spline_knots`, `--flora_poly_degree`, etc.). I also kept your GPU selection via `CUDA_VISIBLE_DEVICES=...`.
 
-
------
-
-## 3.1 FLoRA + ReLU (channel), gate OFF
-
-```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
-  --base_model "$model" \
-  --data_path "$dataset" \
-  --output_dir runs/flora_relu_channel \
-  --batch_size 1 \
-  --num_epochs 3 \
-  --learning_rate 3e-4 \
-  --cutoff_len 512 \
-  --eval_step 10 \
-  --save_step 100 \
-  --device auto \
-  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
-  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --methods flora \
-  --flora_activations relu \
-  --flora_flex_mode channel \
-  --flora_gate_type none \
-  --flora_gate_position after_b \
-  --flora_activation_kwargs_json '{"init_a":0.25}'
-```
-
----
-
-## 3.2 FLoRA + GELU (channel), gate OFF
-
-```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
-  --base_model "$model" \
-  --data_path "$dataset" \
-  --output_dir runs/flora_gelu_channel \
-  --batch_size 1 \
-  --num_epochs 3 \
-  --learning_rate 3e-4 \
-  --cutoff_len 512 \
-  --eval_step 10 \
-  --save_step 100 \
-  --device auto \
-  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
-  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --methods flora \
-  --flora_activations gelu \
-  --flora_flex_mode channel \
-  --flora_gate_type none \
-  --flora_gate_position after_b \
-  --flora_activation_kwargs_json '{"init_k":1.0}'
-```
-
 ---
 
 ## 3.3 FLoRA + Fourier
@@ -191,6 +140,8 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --flora_gate_mode "channel" \
   --gate_strength ${strength} \
   --flora_activation_kwargs_json '{"n_terms":5,"init_scale":0.01, "use_gate": "soft"}'
+
+
 ```
 
 

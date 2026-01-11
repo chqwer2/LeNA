@@ -30,8 +30,16 @@ from peft import FloraConfig
 # Cache dir (your snippet)
 # -------------------------
 preferred_dir = "/Users/haochen/Documents/hf_models"
-fallback_dir = "/media/cbtil3/9feaf350-913e-4def-8114-f03573c04364"
-cache_dir = preferred_dir if os.path.isdir(preferred_dir) else fallback_dir
+fallback_dir  = "/media/cbtil3/9feaf350-913e-4def-8114-f03573c04364"
+fallback_dir2 = os.path.expanduser("~/autodl-tmp/hf_models")
+
+if os.path.isdir(preferred_dir):
+    cache_dir = preferred_dir
+elif os.path.isdir(fallback_dir2):
+    cache_dir = fallback_dir2
+else:
+    cache_dir = fallback_dir
+
 DEBUG = False
 
 # -------------------------
