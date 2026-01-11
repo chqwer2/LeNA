@@ -40,6 +40,8 @@ elif os.path.isdir(fallback_dir2):
 else:
     cache_dir = fallback_dir
 
+print("cache_dir=", cache_dir)
+
 DEBUG = False
 
 # -------------------------
