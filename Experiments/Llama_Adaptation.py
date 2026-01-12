@@ -31,7 +31,7 @@ from peft import FloraConfig
 # -------------------------
 preferred_dir = "/Users/haochen/Documents/hf_models"
 fallback_dir  = "/media/cbtil3/9feaf350-913e-4def-8114-f03573c04364"
-fallback_dir2 = "~/autodl-tmp/hf_home/hub"
+fallback_dir2 = "/root/autodl-tmp/hf_home/hub"
 
 
 print("os.path.isdir(fallback_dir2) = ", os.path.isdir(fallback_dir2))
@@ -696,7 +696,9 @@ def train_one_run(
     device = pick_device(device_arg)
     print(f"\n=== RUN method={method} device={device} ===")
 
-    tokenizer = AutoTokenizer.from_pretrained(base_model, token=hf_token, cache_dir=cache_dir)
+    tokenizer = AutoTokenizer.from_pretrained(base_model,
+                                              token=hf_token,
+                                              cache_dir=cache_dir)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
