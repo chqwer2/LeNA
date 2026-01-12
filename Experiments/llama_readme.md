@@ -53,58 +53,6 @@ CUDA_VISIBLE_DEVICES=0  python Llama_Adaptation.py \
   --methods lora
 ```
 
----
-
-## 3.2 Gate LoRA
-
-
-```bash
-strength="soft"
-strength="hard"
-
-
-CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
-  --base_model "$model" \
-  --data_path "$dataset" \
-  --output_dir runs/flora_gelu_channel \
-  --batch_size 1 \
-  --num_epochs 3 \
-  --learning_rate 3e-4 \
-  --cutoff_len 512 \
-  --eval_step 10 \
-  --save_step 100 \
-  --device auto \
-  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
-  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --methods flora \
-  --flora_activations identity \
-  --flora_flex_mode channel \
-  --flora_gate_type sigmoid \
-  --flora_gate_position after_b \
-  --flora_gate_mode_after_b "voxel" \
-  --flora_activation_kwargs_json '{"init":1.0, "gate_strength":"'${strength}'"}'
-
-# 2) DoRA training command (your script already supports this)
-
-```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
-  --base_model $model \
-  --data_path $dataset \
-  --output_dir runs/dora \
-  --batch_size 1 \
-  --num_epochs 3 \
-  --learning_rate 3e-4 \
-  --cutoff_len 512 \
-  --eval_step 10 \
-  --save_step 100 \
-  --device auto \
-  --lora_r 8 \
-  --lora_alpha 16 \
-  --lora_dropout 0.05 \
-  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --methods dora
-```
-
 -----
 
 # 3) FLoRA training commands
@@ -119,7 +67,7 @@ Below are your **rewritten commands** where **all activation-specific knobs are 
 ```bash
 strength=soft
 strength=hard
-CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
+CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_fourier_channel \

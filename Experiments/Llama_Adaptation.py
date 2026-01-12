@@ -34,6 +34,8 @@ fallback_dir  = "/media/cbtil3/9feaf350-913e-4def-8114-f03573c04364"
 fallback_dir2 = "~/autodl-tmp/hf_home/hub"
 
 
+print("os.path.isdir(fallback_dir2) = ", os.path.isdir(fallback_dir2))
+
 
 if os.path.isdir(preferred_dir):
     cache_dir = preferred_dir
@@ -42,7 +44,7 @@ elif os.path.isdir(fallback_dir2):
 elif os.path.isdir(fallback_dir):
     cache_dir = fallback_dir
 else:
-    cache_dir = fallback_dir
+    cache_dir = fallback_dir2
     print("[WARN] No preferred cache dir found; using fallback:", cache_dir)
 
 
