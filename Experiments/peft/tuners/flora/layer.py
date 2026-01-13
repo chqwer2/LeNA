@@ -70,7 +70,7 @@ class FloraLinear(nn.Module):
         self._active_adapter: Optional[str] = None
 
         self.norm_before_act = nn.ModuleDict()
-
+        self.magnitude       = nn.ParameterDict()
         # debug / logging
         self._forward_logged: Dict[str, bool] = {}
         self._dbg: Dict[str, Dict[str, bool]] = {}
