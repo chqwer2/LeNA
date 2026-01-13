@@ -48,7 +48,7 @@ else:
     print("[WARN] No preferred cache dir found; using fallback:", cache_dir)
 
 
-print("cache_dir=", cache_dir)
+print("cache_dir =", cache_dir)
 
 DEBUG = False
 

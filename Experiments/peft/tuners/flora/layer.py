@@ -4,6 +4,7 @@ from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .activations import make_flora_activation
 from .config import FloraConfig
@@ -68,6 +69,8 @@ class FloraLinear(nn.Module):
         self.scaling: Dict[str, float] = {}
         self._active_adapter: Optional[str] = None
 
+        self.norm_before_act = nn.ModuleDict()
+
         # debug / logging
         self._forward_logged: Dict[str, bool] = {}
         self._dbg: Dict[str, Dict[str, bool]] = {}
@@ -98,7 +101,7 @@ class FloraLinear(nn.Module):
         B = nn.Linear(r, self.out_features, bias=False)
 
         # Original LoRA init style
-        nn.init.kaiming_uniform_(A.weight, a=5**0.5)
+        nn.init.kaiming_uniform_(A.weight, a=5**0.5, nonlinearity='leaky_relu')
         nn.init.zeros_(B.weight)
 
         # --- register under PEFT-recognized names ---
@@ -116,7 +119,12 @@ class FloraLinear(nn.Module):
         self.drop[adapter_name] = nn.Dropout(p=lora_dropout) if lora_dropout > 0 else nn.Identity()
 
         # scaling
-        self.scaling[adapter_name] = float(cfg.lora_alpha) / float(r)
+        # This is for LoRA
+        # self.scaling[adapter_name] = float(cfg.lora_alpha) / float(r)
+        flora_nonlinear_scale = 0.5
+        self.scaling[adapter_name] = float(cfg.lora_alpha) / float(r) * flora_nonlinear_scale
+
+        self.norm_before_act[adapter_name] = nn.LayerNorm(r)
 
         # activation (can be identity)
         self.act[adapter_name] = make_flora_activation(
@@ -124,6 +132,8 @@ class FloraLinear(nn.Module):
             mode=cfg.flora_flex_mode,
             **(cfg.flora_activation_kwargs or {}),
         )
+
+        self.magnitude[adapter_name] = nn.Parameter(torch.tensor(1.0))
 
         # gates (can be identity)
         gate_type = str(getattr(cfg, "flora_gate_type", "none")).lower()
@@ -193,11 +203,18 @@ class FloraLinear(nn.Module):
         B = self.lora_B[name]
         act = self.act[name]
         drop = self.drop[name]
+
         gateA = self.gate_after_a[name]
         gateB = self.gate_after_b[name]
         scale = self.scaling[name]
 
+        norm  = self.norm_before_act.get(name, None)
+
         z = A(drop(x))
+
+        if norm is not None and not isinstance(norm, nn.Identity):
+            z = norm(z)
+
         z = gateA(z)
 
         if not isinstance(act, nn.Identity):
@@ -207,5 +224,8 @@ class FloraLinear(nn.Module):
 
         dz = B(z)
         dz = gateB(dz)
+
+        if hasattr(self, 'magnitude') and name in self.magnitude:
+            dz = self.magnitude[name] * F.normalize(dz, dim=-1)
 
         return y + dz * scale

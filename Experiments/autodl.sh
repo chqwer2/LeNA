@@ -11,6 +11,9 @@ gh auth login    # Login in
 cd   /root/autodl-tmp
 git  clone https://github.com/chqwer2/FLoRA
 
+
+source /etc/network_turbo  # 加速 VPN
+
 cd   /root/autodl-tmp
 cd FLoRA/Experiments
 
@@ -20,17 +23,30 @@ cd FLoRA/Experiments
 #-------- Download Model -----------
 export HF_HOME=$HOME/autodl-tmp/hf_home
 export HF_HUB_CACHE=$HF_HOME/hub
+pip install huggingface_hub
 
 source /etc/network_turbo  # 加速 VPN
 
 python - << 'EOF'
 
 from huggingface_hub import snapshot_download
-snapshot_download("meta-llama/Llama-2-7b-hf", resume_download=True)
+snapshot_download("meta-llama/Meta-Llama-3-8B", resume_download=True)
 print("download complete")
 EOF
 
 
+
+# -------- Debug Save
+
+python your_script.py 2>&1 | tee output.log
+
+
+
+# --------------- Auto Close
+/usr/bin/shutdown
+
+python train.py; /usr/bin/shutdown      # 用;拼接意味着前边的指令不管执行成功与否，都会执行shutdown命令
+python train.py && /usr/bin/shutdown    # 用&&拼接表示前边的命令执行成功后才会执行shutdown。请根据自己的需要选择
 
 
 

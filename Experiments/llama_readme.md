@@ -28,8 +28,9 @@ model=meta-llama/Llama-3.2-1B     # Test
 model=meta-llama/Llama-2-7b-hf
 model=meta-llama/Llama-2-13b-hf
 model=huggyllama/llama-7b
-model=meta-llama/Meta-Llama-3-8B    # Test
 
+
+model=meta-llama/Meta-Llama-3-8B    # Test
 dataset=google/boolq
 
 
@@ -52,6 +53,26 @@ CUDA_VISIBLE_DEVICES=0  python Llama_Adaptation.py \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
   --methods lora
 ```
+
+
+# 2) DoRA
+CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py  \
+  --base_model $model \
+  --data_path $dataset \
+  --output_dir runs/dora \
+  --batch_size 1 \
+  --num_epochs 3 \
+  --learning_rate 3e-4 \
+  --cutoff_len 512 \
+  --eval_step 10 \
+  --save_step 100 \
+  --device auto \
+  --lora_r 8 \
+  --lora_alpha 16 \
+  --lora_dropout 0.05 \
+  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
+  --methods dora
+
 
 -----
 
@@ -82,45 +103,21 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
   --methods flora \
   --flora_activations fourier \
-  --flora_flex_mode "channel" \
+  --flora_flex_mode "spatial" \
   --flora_gate_type none \
   --flora_gate_position after_b \
-  --flora_gate_mode "channel" \
+  --flora_gate_mode none \
   --gate_strength ${strength} \
-  --flora_activation_kwargs_json '{"n_terms":5,"init_scale":0.01, "use_gate": "soft"}'
+  --flora_activation_kwargs_json '{"n_terms":5,"init_scale":0.01, "use_gate": "hard"}'   >> output.txt
+
 
 
 ```
 
 
 
-### (b) global, gate OFF
 
-```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
-  --base_model "$model" \
-  --data_path "$dataset" \
-  --output_dir runs/flora_fourier_global \
-  --batch_size 1 \
-  --num_epochs 3 \
-  --learning_rate 3e-4 \
-  --cutoff_len 512 \
-  --eval_step 10 \
-  --save_step 100 \
-  --device auto \
-  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
-  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
-  --methods flora \
-  --flora_activations fourier \
-  --flora_flex_mode voxel \
-  --flora_gate_type none \
-  --flora_gate_position after_b \
-  --flora_activation_kwargs_json '{"n_terms":4,"init_scale":0.01}'
-```
-
----
-
-## 3.4 FLoRA + Spline (channel), gate OFF
+## 3.2 FLoRA + Spline (channel), gate OFF
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
@@ -134,26 +131,30 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --eval_step 10 \
   --save_step 100 \
   --device auto \
-  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
+  --lora_r 8 --lora_alpha 16  --lora_dropout 0.05 \
   --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
   --methods flora \
   --flora_activations spline \
   --flora_flex_mode channel \
   --flora_gate_type none \
   --flora_gate_position after_b \
-  --flora_activation_kwargs_json '{"n_knots":16,"x_min":-3.0,"x_max":3.0,"init":"identity", "use_gate": "hard"}'
+  --flora_activation_kwargs_json '{"n_knots":16,"x_min":-3.0,"x_max":3.0,"init":"identity", "use_gate": "hard"}'   >> output.txt
+
+
 ```
+
+
 
 ---
 
 ## 3.5 FLoRA + Polynomial (channel), gate OFF
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
+CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --base_model "$model" \
   --data_path "$dataset" \
   --output_dir runs/flora_poly_channel \
-  --batch_size 1 \
+    --batch_size 1 \
   --num_epochs 3 \
   --learning_rate 3e-4 \
   --cutoff_len 512 \
@@ -167,7 +168,9 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --flora_flex_mode channel \
   --flora_gate_type none \
   --flora_gate_position after_b \
-  --flora_activation_kwargs_json '{"degree":3,"init":"identity", "use_gate": "hard"}'
+  --flora_activation_kwargs_json '{"degree":3,"init":"identity", "use_gate": "hard"}'   >> output.txt
+   
+  
 ```
 
 ---
