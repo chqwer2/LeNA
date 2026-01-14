@@ -106,7 +106,7 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --flora_flex_mode "spatial" \
   --flora_gate_type none \
   --flora_gate_position after_b \
-  --flora_gate_mode none \
+  --flora_gate_mode voxel \
   --gate_strength ${strength} \
   --flora_activation_kwargs_json '{"n_terms":5,"init_scale":0.01, "use_gate": "hard"}'   >> output.txt
 

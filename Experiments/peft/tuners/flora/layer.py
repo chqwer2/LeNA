@@ -85,7 +85,7 @@ class FloraLinear(nn.Module):
         self._forward_logged: Dict[str, bool] = {}
         self._dbg: Dict[str, Dict[str, bool]] = {}
 
-        self.use_dora = False  # Placeholder for potential future use
+        self.use_dora = True  # Placeholder for potential future use
 
     @property
     def in_features(self) -> int:
