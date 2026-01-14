@@ -10,7 +10,6 @@ from .activations import make_flora_activation
 from .config import FloraConfig
 from .gates import Gate
 
-
 from copy import deepcopy
 
 import torch
@@ -80,12 +79,25 @@ class FloraLinear(nn.Module):
         self._active_adapter: Optional[str] = None
 
         self.norm_before_act = nn.ModuleDict()
-        self.magnitude       = nn.ParameterDict()
+        self.magnitude = nn.ParameterDict()
         # debug / logging
         self._forward_logged: Dict[str, bool] = {}
         self._dbg: Dict[str, Dict[str, bool]] = {}
 
-        self.use_dora = True  # Placeholder for potential future use
+        self.use_dora = True   # Placeholder for potential future use, no very efficiency
+
+        w = self.base_layer.weight
+        out_f, in_f = self.out_features, self.in_features
+
+        if tuple(w.shape) == (out_f, in_f):
+            self.fan_in_fan_out = True  # standard nn.Linear
+        elif tuple(w.shape) == (in_f, out_f):
+            self.fan_in_fan_out = False  # transposed storage
+        else:
+            # Fallback: default to False but warn loudly
+            self.fan_in_fan_out = True
+
+        self.init = False
 
     @property
     def in_features(self) -> int:
@@ -147,9 +159,24 @@ class FloraLinear(nn.Module):
             **(cfg.flora_activation_kwargs or {}),
         )
 
-
         # weight_norm
-        self.magnitude[adapter_name] = nn.Parameter(torch.tensor(1.0), requires_grad=True)
+
+        with torch.no_grad():
+            # Compute effective LoRA weight matrix: B @ A
+            lora_weight = B.weight @ A.weight  # [out_features, in_features]
+
+            # Get base layer weight
+            weight = dequantize_module_weight(self.base_layer)
+            lora_weight = lora_weight.to(device=weight.device, dtype=weight.dtype)
+
+            # Compute initial magnitude as the column-wise norm of (W + scaling * ΔW)
+            weight_norm = self.get_weight_norm(weight, lora_weight, self.scaling[adapter_name])
+
+            # Initialize magnitude parameter with proper shape [out_features]
+            self.magnitude[adapter_name] = nn.Parameter(
+                weight_norm.clone(),
+                requires_grad=True
+            )
 
         # gates (can be identity)
         gate_type = str(getattr(cfg, "flora_gate_type", "none")).lower()
@@ -208,6 +235,20 @@ class FloraLinear(nn.Module):
             return next(iter(self.lora_A.keys()))
         return None
 
+    def get_weight_norm(self, weight, lora_weight, scaling) -> torch.Tensor:
+        # calculate L2 norm of weight matrix, column-wise
+        # weight = transpose(weight, self.fan_in_fan_out)
+        # lora_weight = transpose(lora_weight, self.fan_in_fan_out)
+
+        if lora_weight.shape != weight.shape:
+            lora_weight = transpose(lora_weight, True)
+
+        # print("Wright=", lora_weight.shape, weight.shape)
+
+        weight = weight + scaling * lora_weight
+        weight_norm = torch.linalg.norm(weight, dim=1).to(weight.dtype)
+        return weight_norm
+
     def forward(self, x: torch.Tensor, adapter_name: Optional[str] = None) -> torch.Tensor:
         y = self.base_layer(x)
 
@@ -226,19 +267,16 @@ class FloraLinear(nn.Module):
 
         norm = self.norm_before_act[name]
 
-
         if self.use_dora:
+            # x_eye = torch.eye(A.weight.shape[1], device=A.weight.device, dtype=x.dtype)
             x_eye = torch.eye(A.weight.shape[1], device=A.weight.device, dtype=x.dtype)
 
-            if not isinstance(act, nn.Identity):
-                z_hwc, _, orig_ndim = _to_hwc(x_eye)
-                z_hwc = act(z_hwc)
-                z = _from_hwc(z_hwc, orig_ndim)
+            # if not isinstance(act, nn.Identity) and self.init:
+            #     z_hwc, _, orig_ndim = _to_hwc(x_eye)
+            #     z_hwc = act(z_hwc)
+            #     x_eye = _from_hwc(z_hwc, orig_ndim)
 
-                z_eye = z.clamp(-10.0, 10.0)
-
-
-            lora_weight = B(A(z_eye))
+            lora_weight = B(A(x_eye))
 
             weight = dequantize_module_weight(self.base_layer)
             weight = weight.to(x.dtype)
@@ -247,21 +285,19 @@ class FloraLinear(nn.Module):
             magnitude = self.magnitude[name]
 
             weight_norm = weight_norm.detach()
-            mag_norm_scale = magnitude / weight_norm
-
-
+            mag_norm_scale = (magnitude / weight_norm).view(1, -1)
 
         # z = A(drop(x))
         z = A(x)  #
         z = gateA(z)
 
         if not isinstance(act, nn.Identity):
+            self.init = True
             z_hwc, _, orig_ndim = _to_hwc(z)
             z_hwc = act(z_hwc)
             z = _from_hwc(z_hwc, orig_ndim)
 
             z = z.clamp(-10.0, 10.0)
-
 
         dz = B(z)
         dz = gateB(dz)
@@ -271,7 +307,12 @@ class FloraLinear(nn.Module):
         #     dz = self.magnitude[name] * (dz / dz_norm)
 
         if self.use_dora:
-            return (mag_norm_scale - 1) * y + mag_norm_scale * dz * scale
+            if self.base_layer.bias is not None:
+                y = y - self.base_layer.bias
+
+            # print("mag_norm_scale = ", mag_norm_scale.max(), mag_norm_scale.min())
+
+            return  mag_norm_scale  * y + mag_norm_scale * dz * scale
 
         dz = self.magnitude[name] * dz
 

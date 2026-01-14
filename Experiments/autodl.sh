@@ -12,12 +12,22 @@ cd   /root/autodl-tmp
 git  clone https://github.com/chqwer2/FLoRA
 
 
-source /etc/network_turbo  # 加速 VPN
 
+
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+
+
+source /etc/network_turbo  # 加速 VPN
 cd   /root/autodl-tmp
 cd FLoRA/Experiments
 
 
+#tokenizer = AutoTokenizer.from_pretrained(
+#    model_path,
+#    local_files_only=True,
+#)
 
 
 #-------- Download Model -----------
