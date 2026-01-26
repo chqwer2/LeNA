@@ -260,6 +260,51 @@ def normalize_splits(ds: DatasetDict) -> DatasetDict:
     return ds
 
 
+from datasets import concatenate_datasets
+
+def parse_dataset_spec(spec: str) -> Tuple[str, Optional[str], str]:
+    """
+    spec: "path" or "path:config"
+    returns: (path, config_or_None, display_name)
+    """
+    spec = spec.strip()
+    if ":" in spec:
+        path, cfg = spec.split(":", 1)
+        path, cfg = path.strip(), cfg.strip()
+        display = f"{path}:{cfg}"
+        return path, cfg, display
+    else:
+        path = spec
+        return path, None, path
+
+
+def load_tokenize_one(
+    *,
+    data_path: str,
+    data_name: Optional[str],
+    # dataset_specs: Optional[List[str]],  # NEW
+    tokenizer,
+    cutoff_len: int,
+    val_set_size: int,
+    cache_dir: str,
+) -> DatasetDict:
+    # Load
+    if data_name and data_name.strip():
+        ds = load_dataset(data_path, data_name.strip(), cache_dir=cache_dir)
+    else:
+        ds = load_dataset(data_path, cache_dir=cache_dir)
+
+    # Tokenize/split -> returns DatasetDict with train/test
+    tok = tokenize_and_split(
+        ds,
+        data_path=data_path,   # important for formatting rules in format_example_to_text()
+        tokenizer=tokenizer,
+        cutoff_len=cutoff_len,
+        val_set_size=val_set_size
+    )
+    return tok
+
+
 # -------------------------
 # Fixed-length tokenization + split
 # -------------------------
@@ -658,8 +703,9 @@ def debug_trainables(model, method: str, topn_layers: int = 10):
 def train_one_run(
     *,
     base_model: str,
-    data_path: str,
-    data_name: Optional[str],
+    dataset_specs: Optional[List[str]],
+    # data_path: str,
+    # data_name: Optional[str],
     output_dir: str,
     batch_size: int,
     num_epochs: int,
@@ -799,13 +845,64 @@ def train_one_run(
     enable_dataset_download_verbose()
 
     # Many of these datasets require a config name (e.g., winogrande_xl, ARC-Easy, main).
-    if data_name and data_name.strip():
-        dataset = load_dataset(data_path, data_name.strip(), cache_dir=cache_dir)
-    else:
-        dataset = load_dataset(data_path, cache_dir=cache_dir)
-
-    tokenized = tokenize_and_split(dataset, data_path=data_path, tokenizer=tokenizer, cutoff_len=cutoff_len, val_set_size=val_set_size)
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
+
+    # -------------------------
+    # MULTI-DATASET LOADING
+    # -------------------------
+    # dataset_specs overrides single data_path/data_name if provided
+    specs = dataset_specs  # or []
+    if len(specs) == 0:
+        # backward-compatible single dataset
+        if data_name and data_name.strip():
+            specs = [f"{data_path}:{data_name.strip()}"]
+        else:
+            specs = [data_path]
+
+    train_splits = []
+    test_splits_by_name = {}
+
+    for spec in specs:
+        dp, dn, display = parse_dataset_spec(spec)
+        print(f"\n[DATA] Loading: {display}")
+
+        tok = load_tokenize_one(
+            data_path=dp,
+            data_name=dn,
+            tokenizer=tokenizer,
+            cutoff_len=cutoff_len,
+            val_set_size=val_set_size,
+            cache_dir=cache_dir,
+        )
+
+        # Optional debug slicing per dataset
+        # if DEBUG:
+        #     tr_n = min(20, len(tok["train"]))
+        #     ev_n = min(3200, len(tok["test"]))
+        #     tr_ds = tok["train"].select(range(tr_n))
+        #     te_ds = tok["test"].select(range(ev_n))
+        # else:
+        #     tr_ds = tok["train"]
+        #     te_ds = tok["test"]
+
+        print(f"[DATA] {display} train={len(tr_ds)} test={len(te_ds)}")
+
+        train_splits.append(tr_ds)
+        test_splits_by_name[display] = te_ds
+
+    # Concatenate all train splits into one big training set
+    if len(train_splits) == 1:
+        train_dataset = train_splits[0]
+    else:
+        train_dataset = concatenate_datasets(train_splits).shuffle(seed=42)
+
+    # Pick ONE eval dataset for Trainer's periodic eval during training
+    # (Final metrics are computed separately for each dataset after training.)
+    first_name = list(test_splits_by_name.keys())[0]
+    eval_dataset = test_splits_by_name[first_name]
+
+    print(f"\n[DATA] Combined training dataset size = {len(train_dataset)}")
+    print(f"[DATA] During-training eval dataset   = {first_name} (size={len(eval_dataset)})")
 
     # Training args
     training_args = TrainingArguments(
@@ -877,15 +974,36 @@ def train_one_run(
     torch.cuda.empty_cache()  # optional but helpful
     model.eval()
 
-    metrics = trainer.evaluate(eval_dataset=eval_dataset, metric_key_prefix="test")
-    print("\n=== Final test metrics ===")
-    for k, v in metrics.items():
-        print(f"{k}: {v}")
+    # metrics = trainer.evaluate(eval_dataset=eval_dataset, metric_key_prefix="test")
+    # print("\n=== Final test metrics ===")
+    # for k, v in metrics.items():
+    #     print(f"{k}: {v}")
+    #
+    # # Optional: persist metrics
+    # os.makedirs(output_dir, exist_ok=True)
+    # with open(os.path.join(output_dir, "test_metrics.json"), "w") as f:
+    #     json.dump(metrics, f, indent=2)
 
-    # Optional: persist metrics
+    print("\n=== Final test metrics (per dataset) ===")
+    all_metrics = {}
+
+    for name, ds_test in test_splits_by_name.items():
+        # sanitize prefix (Trainer uses it in metric keys)
+        prefix = "test_" + name.replace("/", "_").replace(":", "_").replace("-", "_")
+        metrics = trainer.evaluate(eval_dataset=ds_test, metric_key_prefix=prefix)
+
+        all_metrics[name] = metrics
+
+        print(f"\n--- {name} ---")
+        # print just the important ones in a stable order
+        for k in sorted(metrics.keys()):
+            print(f"{k}: {metrics[k]}")
+
     os.makedirs(output_dir, exist_ok=True)
-    with open(os.path.join(output_dir, "test_metrics.json"), "w") as f:
-        json.dump(metrics, f, indent=2)
+    with open(os.path.join(output_dir, "test_metrics_by_dataset.json"), "w") as f:
+        json.dump(all_metrics, f, indent=2)
+
+
 
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
@@ -993,8 +1111,9 @@ def run_experiments(
             out = os.path.join(output_dir, m.lower())
             train_one_run(
                 base_model=base_model,
-                data_path=data_path,
-                data_name=data_name,
+                dataset_specs=getattr(args, "dataset", None),  # NEW
+                # data_path=data_path,
+                # data_name=data_name,
                 output_dir=out,
                 method=m.lower(),
                 flora_activation="identity",
@@ -1053,7 +1172,14 @@ if __name__ == "__main__":
     parser.add_argument("--base_model", type=str, default="sshleifer/tiny-gpt2")
 
     # Use --data_path and optionally --data_name for configs like ARC-Easy, winogrande_xl, main, etc.
-    parser.add_argument("--data_path", type=str, default="google/boolq")
+    parser.add_argument(
+        "--dataset",
+        nargs="+",
+        default=[],
+        help="List of datasets. Each item is path or path:config "
+             "(e.g., google/boolq or allenai/ai2_arc:ARC-Easy)."
+    )
+
     parser.add_argument("--data_name", type=str, default="", help="Dataset config name, e.g. winogrande_xl, ARC-Easy, main")
 
     parser.add_argument("--output_dir", type=str, default="./outputs_compare")
