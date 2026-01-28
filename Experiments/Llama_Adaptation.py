@@ -49,8 +49,8 @@ else:
 
 
 print("cache_dir =", cache_dir)
+DEBUG = True
 
-DEBUG = False
 
 # -------------------------
 # Device helpers
@@ -109,15 +109,33 @@ def format_example_to_text(data_path: str, ex: Dict[str, Any]) -> str:
     # ---- ybisk/piqa ----
     # fields: goal, sol1, sol2, label (0/1)
     if dp in ("piqa", "ybisk/piqa"):
-        label = int(ex["label"]) if ex.get("label", -1) is not None else -1
-        solutions = [ex["sol1"], ex["sol2"]]
+        raw = ex.get("label", None)
+
+        # robust parse
+        try:
+            if raw is None:
+                label = -1
+            elif isinstance(raw, int):
+                label = raw
+            elif isinstance(raw, str):
+                raw = raw.strip()
+                label = int(raw) if raw != "" else -1
+            else:
+                label = int(raw)
+        except Exception:
+            label = -1
+
+        # build text even if label missing
+        solutions = [ex.get("sol1", ""), ex.get("sol2", "")]
         correct = solutions[label] if label in (0, 1) else ""
+        answer_letter = ("A" if label == 0 else "B") if label in (0, 1) else ""
+
         return (
             "### Task: Choose the best solution.\n\n"
-            f"Goal: {ex['goal']}\n"
-            f"A. {ex['sol1']}\n"
-            f"B. {ex['sol2']}\n\n"
-            f"Answer: {('A' if label == 0 else 'B') if label in (0, 1) else ''}\n"
+            f"Goal: {ex.get('goal', '')}\n"
+            f"A. {solutions[0]}\n"
+            f"B. {solutions[1]}\n\n"
+            f"Answer: {answer_letter}\n"
             f"{correct}"
         )
 
@@ -147,18 +165,40 @@ def format_example_to_text(data_path: str, ex: Dict[str, Any]) -> str:
     # common fields: ctx, endings (list), label (0..3)
     # some variants: ctx_a, ctx_b, activity_label etc — we'll use what's present.
     if dp == "rowan/hellaswag":
-        ctx = ex.get("ctx") or (
-            (ex.get("ctx_a", "") + " " + ex.get("ctx_b", "")).strip()
-        )
+        ctx = ex.get("ctx") or ((ex.get("ctx_a", "") + " " + ex.get("ctx_b", "")).strip())
+
         endings = ex.get("endings", [])
-        label = int(ex["label"]) if ex.get("label", None) is not None else -1
+        # Some versions may store endings as tuple or other sequence; normalize
+        if endings is None:
+            endings = []
+        else:
+            endings = list(endings)
+
+        raw = ex.get("label", None)
+
+        # robust parse for label (can be int, "0", "", None)
+        try:
+            if raw is None:
+                label = -1
+            elif isinstance(raw, int):
+                label = raw
+            elif isinstance(raw, str):
+                raw = raw.strip()
+                label = int(raw) if raw != "" else -1
+            else:
+                label = int(raw)
+        except Exception:
+            label = -1
+
         choices = [(chr(ord("A") + i), endings[i]) for i in range(len(endings))]
         correct = endings[label] if 0 <= label < len(endings) else ""
+        answer_letter = chr(ord("A") + label) if 0 <= label < len(endings) else ""
+
         return (
             "### Task: Pick the most plausible continuation.\n\n"
             f"Context: {ctx}\n\n"
             f"{_join_choices(choices)}\n\n"
-            f"Answer: {chr(ord('A') + label) if 0 <= label < len(endings) else ''}\n"
+            f"Answer: {answer_letter}\n"
             f"{correct}"
         )
 
@@ -835,6 +875,7 @@ def train_one_run(
     total, trainable = count_trainable_params(model)
     print(f"Params: trainable={trainable:,} / total={total:,} ({100*trainable/total:.4f}%)")
 
+
     debug_trainables(model, method=method)
 
 
@@ -853,13 +894,6 @@ def train_one_run(
     # -------------------------
     # dataset_specs overrides single data_path/data_name if provided
     specs = dataset_specs  # or []
-    if len(specs) == 0:
-        # backward-compatible single dataset
-        if data_name and data_name.strip():
-            specs = [f"{data_path}:{data_name.strip()}"]
-        else:
-            specs = [data_path]
-
     train_splits = []
     test_splits_by_name = {}
 
@@ -950,19 +984,55 @@ def train_one_run(
         eval_dataset = test_splits_by_name[first_name]
 
 
-    # if DEBUG:
-    #     tr_n = min(20, len(tokenized["train"]))
-    #     ev_n = min(3200, len(tokenized["test"]))
-    #
-    #     train_dataset = tokenized["train"].select(range(tr_n))
-    #     eval_dataset  = tokenized["test"].select(range(ev_n))
-    #
-    # else:
-    #     train_dataset = tokenized["train"]
-    #     eval_dataset  = tokenized["test"]
+    # Try to analysis model with Params whole, Params for training, and the percentage
+    # and GFLOPs, inference time (avg for 200 cases)
+    print("output_dir=", output_dir)
+
+    # -------------------------
+    # Params stats
+    # -------------------------
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    pct = (100.0 * trainable_params / total_params) if total_params > 0 else 0.0
+
+    print("\n[ANALYZE]")
+    print(f"Total params     : {total_params:,}")
+    print(f"Trainable params : {trainable_params:,}")
+    print(f"% trainable      : {pct:.6f}%")
+
+    # -------------------------
+    # Avg inference time (200 samples)
+    # -------------------------
+    model.eval()
+    n_eval = min(200, len(eval_dataset))
+    warmup = min(10, n_eval)
+
+    def _to_device(batch):
+        return {k: (v.to(device) if hasattr(v, "to") else v) for k, v in batch.items()}
+
+    # Timed inference
+    t0 = time.perf_counter()
+    times = []
+    with torch.no_grad():
+        for i in range(warmup):
+            b = eval_dataset[i]
+            _ = model(
+                input_ids=torch.tensor(b["input_ids"], device=device).unsqueeze(0),
+                attention_mask=torch.tensor(b["attention_mask"], device=device).unsqueeze(0),
+            )
+            device_sync(device)
+            times.append(time.perf_counter() - t0)
+
+    avg_ms = 1000.0 * (sum(times) / len(times))
+
+    print(f"Avg inference time (200 samples): {avg_ms:.3f} ms")
+    model.train()
+
 
     print(f"Training dataset={len(train_dataset)}")
     print(f"Evaluation dataset={len(eval_dataset)}")
+
+    print("\n[START]")
 
     trainer = Trainer(
         model=model,
@@ -984,17 +1054,7 @@ def train_one_run(
     torch.cuda.empty_cache()  # optional but helpful
     model.eval()
 
-    # metrics = trainer.evaluate(eval_dataset=eval_dataset, metric_key_prefix="test")
-    # print("\n=== Final test metrics ===")
-    # for k, v in metrics.items():
-    #     print(f"{k}: {v}")
-    #
-    # # Optional: persist metrics
-    # os.makedirs(output_dir, exist_ok=True)
-    # with open(os.path.join(output_dir, "test_metrics.json"), "w") as f:
-    #     json.dump(metrics, f, indent=2)
-
-    print("\n=== Final test metrics (per dataset) ===")
+    print("\n=== Final test metrics ===")
     all_metrics = {}
 
     for name, ds_test in test_splits_by_name.items():

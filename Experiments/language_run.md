@@ -1,18 +1,13 @@
-
 pip install "datasets<4.0.0" "huggingface_hub<0.24"
-
 pip install transformers -U`
 
 # 1) LoRA training command (your script already supports this)
-
-# huggyllama/llama-7b | microsoft/phi-2  | meta-llama/Llama-3.2-1B  | meta-llama/Llama-3.2-3B
-
 
 dataset="google/boolq \
          piqa \
          allenai/social_i_qa \
          Rowan/hellaswag \
-         allenai/winogrande \
+         allenai/winogrande:winogrande_xl \
          allenai/ai2_arc:ARC-Easy \
          allenai/ai2_arc:ARC-Challenge \
          allenai/openbookqa" 
@@ -31,7 +26,7 @@ model=huggyllama/llama-7b
 
 
 model=meta-llama/Meta-Llama-3-8B    # Test
-dataset=google/boolq
+
 
 
 

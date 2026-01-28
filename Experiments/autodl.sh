@@ -9,7 +9,7 @@ gh auth login    # Login in
 
 
 cd   /root/autodl-tmp
-git  clone https://github.com/chqwer2/FLoRA
+git  clone https://github.com/chqwer2/LeNA
 
 
 
@@ -21,7 +21,7 @@ export TRANSFORMERS_OFFLINE=1
 
 source /etc/network_turbo  # 加速 VPN
 cd   /root/autodl-tmp
-cd FLoRA/Experiments
+cd   LeNA/Experiments
 
 
 #tokenizer = AutoTokenizer.from_pretrained(
