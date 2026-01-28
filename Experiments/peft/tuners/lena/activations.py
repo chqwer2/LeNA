@@ -175,7 +175,9 @@ class FlexSwish(nn.Module):
             self._C = C
 
             if self.use_gate != "none":
-                self.t = nn.Parameter(torch.full(base, self.init_gate, device=x.device, dtype=x.dtype))
+                self.t = nn.Parameter(
+                    torch.full((H, W, C), self.init_t, dtype=x.dtype, device=x.device)
+                )
 
         else:
             if self.mode in ("dim", "voxel") and self._C is not None and C != self._C:
@@ -329,7 +331,7 @@ class FlexFourier(nn.Module):
             if self.use_gate != "none":
                 # scale amplitudes to zero initially
                 self.t = nn.Parameter(
-                    torch.full(shape, self.init_t, dtype=x.dtype, device=x.device)
+                    torch.full((H, W, C), self.init_t, dtype=x.dtype, device=x.device)
                 )
 
         else:
@@ -369,8 +371,7 @@ class FlexFourier(nn.Module):
             if self.use_gate == "soft":
                 gate = torch.sigmoid(p)
             elif self.use_gate == "hard":
-                gate = self._hard_sigmoid_st(p)
-
+                gate = _hard_sigmoid_st(p)
             return residual * gate + x * (1 - gate)
 
 class FlexSpline(nn.Module):
@@ -404,9 +405,6 @@ class FlexSpline(nn.Module):
         self.use_gate = use_gate
         self.init_t = 1
 
-        # print("use_gate = ", use_gate)
-        # print("use flexspline")
-
     def _maybe_init(self, x: torch.Tensor):
         H, W, C = _infer_hwc(x)
 
@@ -416,7 +414,6 @@ class FlexSpline(nn.Module):
         if self.knots_y is None:
             base = _param_base_shape(self.mode, H, W, C, max_h=self.max_h, max_w=self.max_w)
             shape = base + (self.n_knots,)
-
 
             # print("self.mode:", self.mode, "numel:", math.prod(base), "shape:", base)
 
@@ -433,8 +430,9 @@ class FlexSpline(nn.Module):
             if self.use_gate != "none":
                 # scale amplitudes to zero initially
                 self.t = nn.Parameter(
-                    torch.full(shape, self.init_t, dtype=x.dtype, device=x.device)
+                    torch.full((H, W, C), self.init_t, dtype=x.dtype, device=x.device)
                 )
+
 
         else:
             if self.mode in ("dim", "voxel") and self._C is not None and C != self._C:
@@ -485,8 +483,8 @@ class FlexSpline(nn.Module):
             if self.use_gate == "soft":
                 gate = torch.sigmoid(p)
             elif self.use_gate == "hard":
-                gate = self._hard_sigmoid_st(p)
-
+                gate = _hard_sigmoid_st(p)
+            # print("residual,gate, y0 shapes:", residual.shape, gate.shape, y0.shape, p.shape)
             return residual * gate + y0 * (1 - gate)
 
 
@@ -545,7 +543,7 @@ class FlexPolynomial(nn.Module):
             if self.use_gate != "none":
                 # scale amplitudes to zero initially
                 self.t = nn.Parameter(
-                    torch.full(shape, self.init_t, dtype=x.dtype, device=x.device)
+                    torch.full((H, W, C), self.init_t, dtype=x.dtype, device=x.device)
                 )
 
 
@@ -585,7 +583,7 @@ class FlexPolynomial(nn.Module):
             if self.use_gate == "soft":
                 gate = torch.sigmoid(p)
             elif self.use_gate == "hard":
-                gate = self._hard_sigmoid_st(p)
+                gate = _hard_sigmoid_st(p)
 
             return residual * gate + x * (1 - gate)
 

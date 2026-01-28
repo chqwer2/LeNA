@@ -123,7 +123,7 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --base_model "$model" \
   --dataset "$dataset" \
   --output_dir runs/lena_spline_channel \
-  --batch_size 16 \
+  --batch_size 8 \
   --num_epochs 3 \
   --learning_rate 3e-4 \
   --cutoff_len 512 \
