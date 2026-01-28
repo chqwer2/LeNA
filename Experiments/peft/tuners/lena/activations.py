@@ -6,8 +6,8 @@ import math
 import torch
 import torch.nn as nn
 
-FlexMode = Literal["global", "spatial", "channel", "voxel"]
-ActKind = Literal["identity", "relu", "gelu", "fourier", "spline", "polynomial"]
+FlexMode = Literal["global", "token", "dim", "voxel"]
+ActKind = Literal["identity", "relu", "swish", "gelu", "fourier", "spline", "polynomial"]
 
 
 # -----------------------
@@ -28,7 +28,7 @@ def _require_max_hw(mode: FlexMode, max_h: Optional[int], max_w: Optional[int]):
     For spatial/voxel params, H/W can change (seq_len changes), so we must allocate
     at a fixed max and slice.
     """
-    if mode in ("spatial", "voxel"):
+    if mode in ("token", "voxel"):
         if max_h is None:
             raise ValueError(
                 f"Flex mode '{mode}' requires max_h (and optionally max_w) to support variable H/W."
@@ -59,9 +59,9 @@ def _param_base_shape(
     """
     if mode == "global":
         return (1, 1, 1)
-    if mode == "channel":
+    if mode == "dim":
         return (1, 1, C)
-    if mode == "spatial":
+    if mode == "token":
         return (int(H), int(W), 1)
     if mode == "voxel":
         # max_h, max_w = _require_max_hw(mode, max_h, max_w)
@@ -140,7 +140,7 @@ class FlexGELU(nn.Module):
             self.k = nn.Parameter(torch.full(base, self.init_k, dtype=x.dtype, device=x.device))
             self._C = C
         else:
-            if self.mode in ("channel", "voxel") and self._C is not None and C != self._C:
+            if self.mode in ("dim", "voxel") and self._C is not None and C != self._C:
                 raise ValueError(f"Channel size C changed from {self._C} to {C} for mode='{self.mode}'.")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -150,7 +150,7 @@ class FlexGELU(nn.Module):
         if k is None:
             return x
 
-        if self.mode in ("spatial", "voxel"):
+        if self.mode in ("token", "voxel"):
             k = _slice_hw(k, H, W)
 
         k = _broadcast_param_to_x(k, x)
@@ -179,7 +179,7 @@ class FlexFourier(nn.Module):
 
     def __init__(
         self,
-        mode: FlexMode = "channel",
+        mode: FlexMode = "dim",
         n_terms: int = 4,
         init_scale: float = 0.01,
         max_h: Optional[int] = None,
@@ -227,7 +227,7 @@ class FlexFourier(nn.Module):
                 )
 
         else:
-            if self.mode in ("channel", "voxel") and self._C is not None and C != self._C:
+            if self.mode in ("dim", "voxel") and self._C is not None and C != self._C:
                 raise ValueError(f"Channel size C changed from {self._C} to {C} for mode='{self.mode}'.")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -238,7 +238,7 @@ class FlexFourier(nn.Module):
         if a is None or w is None or p is None:
             return x
 
-        if self.mode in ("spatial", "voxel"):
+        if self.mode in ("token", "voxel"):
             a = _slice_hw(a, H, W)
             w = _slice_hw(w, H, W)
             p = _slice_hw(p, H, W)
@@ -300,12 +300,20 @@ class FlexSpline(nn.Module):
 
     def _maybe_init(self, x: torch.Tensor):
         H, W, C = _infer_hwc(x)
+
+
+
         if self.knots_x.device != x.device or self.knots_x.dtype != x.dtype:
             self.knots_x = self.knots_x.to(device=x.device, dtype=x.dtype)
+
+
 
         if self.knots_y is None:
             base = _param_base_shape(self.mode, H, W, C, max_h=self.max_h, max_w=self.max_w)
             shape = base + (self.n_knots,)
+
+            print("self.mode:", self.mode, base.flatten().numel())
+
 
             if self.init == "identity":
                 ky = self.knots_x.view(1, 1, 1, -1).expand(*base, self.n_knots).clone()
@@ -324,7 +332,7 @@ class FlexSpline(nn.Module):
                 )
 
         else:
-            if self.mode in ("channel", "voxel") and self._C is not None and C != self._C:
+            if self.mode in ("dim", "voxel") and self._C is not None and C != self._C:
                 raise ValueError(f"Channel size C changed from {self._C} to {C} for mode='{self.mode}'.")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -343,7 +351,7 @@ class FlexSpline(nn.Module):
 
         # If you implemented slicing for spatial/voxel, do it BEFORE expand:
         H, W, C = _infer_hwc(x)
-        if self.mode in ("spatial", "voxel"):
+        if self.mode in ("token", "voxel"):
             ky = _slice_hw(ky, H, W)  # ky: [H,W,C,K] after slice
 
         # ky should now be [H',W',C',K]
@@ -437,7 +445,7 @@ class FlexPolynomial(nn.Module):
 
 
         else:
-            if self.mode in ("channel", "voxel") and self._C is not None and C != self._C:
+            if self.mode in ("dim", "voxel") and self._C is not None and C != self._C:
                 raise ValueError(f"Channel size C changed from {self._C} to {C} for mode='{self.mode}'.")
 
 
@@ -449,7 +457,7 @@ class FlexPolynomial(nn.Module):
         if c is None:
             return x
 
-        if self.mode in ("spatial", "voxel"):
+        if self.mode in ("token", "voxel"):
             c = _slice_hw(c, H, W)
 
         # broadcast to x with coeff dim

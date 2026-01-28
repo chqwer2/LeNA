@@ -331,18 +331,9 @@ def load_tokenize_one(
 ) -> DatasetDict:
     # Load
     if data_name and data_name.strip():
-        ds = load_dataset(
-            data_path,
-            data_name.strip(),
-            cache_dir=cache_dir,
-            trust_remote_code=True
-        )
+        ds = load_dataset(data_path, data_name.strip(), cache_dir=cache_dir)
     else:
-        ds = load_dataset(
-            data_path,
-            cache_dir=cache_dir,
-            trust_remote_code=True
-        )
+        ds = load_dataset(data_path, cache_dir=cache_dir)
 
     # Tokenize/split -> returns DatasetDict with train/test
     tok = tokenize_and_split(
@@ -860,6 +851,8 @@ def train_one_run(
     # Wrap model
     model = get_peft_model(model, peft_cfg)
     model.to(device)
+    base_dtype = next(model.base_model.parameters()).dtype
+    model = model.to(dtype=base_dtype)
 
     # Lazy init activations: one forward with fixed length
     with torch.no_grad():
@@ -1035,6 +1028,43 @@ def train_one_run(
     avg_ms = 1000.0 * (sum(times) / len(times))
 
     print(f"Avg inference time (200 samples): {avg_ms:.3f} ms")
+
+    # -------------------------
+    # GFLOPs per forward (single sample)
+    # -------------------------
+    gflops = None
+    try:
+        from torch.profiler import profile, ProfilerActivity
+
+        b0 = eval_dataset[0]
+        ids0 = torch.tensor(b0["input_ids"], device=device).unsqueeze(0)
+        att0 = torch.tensor(b0["attention_mask"], device=device).unsqueeze(0)
+
+        acts = [ProfilerActivity.CPU]
+        if device.type == "cuda":
+            acts.append(ProfilerActivity.CUDA)
+
+        with torch.no_grad():
+            with profile(activities=acts, record_shapes=False, with_flops=True) as prof:
+                _ = model(input_ids=ids0, attention_mask=att0)
+                device_sync(device)
+
+        total_flops = 0
+        for evt in prof.key_averages():
+            if getattr(evt, "flops", None):
+                total_flops += evt.flops
+
+        if total_flops > 0:
+            gflops = total_flops / 1e9
+            print(f"GFLOPs / forward (batch=1): {gflops:.3f}, total_flops={total_flops:,}")
+        else:
+            print("GFLOPs: profiler reported 0 (not supported for some ops/builds).")
+
+
+    except Exception as e:
+        print("GFLOPs: unavailable on this setup:", str(e))
+
+
     model.train()
 
 
@@ -1042,6 +1072,7 @@ def train_one_run(
     print(f"Evaluation dataset={len(eval_dataset)}")
 
     print("\n[START]")
+    model = model.to(dtype=torch.float32)
 
     trainer = Trainer(
         model=model,
@@ -1053,6 +1084,7 @@ def train_one_run(
         compute_metrics=compute_metrics,  # <-- add this
         preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     )
+
 
     trainer.train()
 
