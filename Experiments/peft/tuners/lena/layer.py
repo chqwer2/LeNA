@@ -111,14 +111,14 @@ class LeNALinear(nn.Module):
         # PEFT will call this
         self._active_adapter = name
 
-    def add_adapter(self, adapter_name: str, cfg: lenaConfig):
+    def add_adapter(self, adapter_name: str, cfg: LeNAConfig):
         """
         PEFT calls this (usually adapter_name == "default").
         The key fix is: put A/B into lora_A/lora_B so PEFT will unfreeze them.
         """
         r = int(cfg.r)
         if r <= 0:
-            raise ValueError("lenaConfig.r must be > 0")
+            raise ValueError("LeNAConfig.r must be > 0")
 
         # Create A/B
         A = nn.Linear(self.in_features, r, bias=False)

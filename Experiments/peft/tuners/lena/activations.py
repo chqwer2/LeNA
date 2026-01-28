@@ -6,6 +6,8 @@ import math
 import torch
 import torch.nn as nn
 import math
+import torch.nn.functional as F
+
 
 FlexMode = Literal["global", "token", "dim", "voxel"]
 ActKind = Literal["identity", "relu", "swish", "gelu", "fourier", "spline", "polynomial"]
@@ -118,8 +120,111 @@ class FlexReLU(nn.Module):
         self._C: Optional[int] = None  # for channel/voxel consistency
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        self._maybe_init(x)
         return torch.where(x >= 0, x, 0)
+
+
+
+class FlexSwish(nn.Module):
+    """
+    "Flex" Swish/SiLU: y = x * sigmoid(beta * x)
+
+    beta can be:
+      - "dim"/"voxel": per-channel (C) (and possibly per-voxel depending on your _param_base_shape)
+      - "token"/"voxel": optionally per-(H,W,...) and sliced with _slice_hw like your FlexFourier
+
+    Optional gating for identity init:
+      - "soft":     y = gate * swish(x) + (1-gate) * x
+      - "hard":     same but hard gate (ST)
+      - "residual": y = x + gate * (swish(x) - x)
+      - "none":     y = swish(x)
+    """
+    kind = "flexswish"
+
+    def __init__(
+        self,
+        mode: FlexMode = "dim",
+        init_beta: float = 1.0,
+        max_h: Optional[int] = None,
+        max_w: Optional[int] = None,
+        use_gate: str = "residual",   # ["soft", "hard", "none", "residual"]
+        init_gate: float = -8.0,      # sigmoid(-8) ~ 0.0003 => near-identity at init
+    ):
+        super().__init__()
+        self.mode = mode
+        self.max_h = max_h
+        self.max_w = max_w
+        self.use_gate = use_gate
+
+        self.init_beta = float(init_beta)
+        self.init_gate = float(init_gate)
+
+        self.beta: Optional[nn.Parameter] = None  # unconstrained, mapped via softplus -> positive
+        self.t: Optional[nn.Parameter] = None     # gate logits
+        self._C: Optional[int] = None
+
+    def _maybe_init(self, x: torch.Tensor):
+        H, W, C = _infer_hwc(x)
+
+        if self.beta is None:
+            base = _param_base_shape(self.mode, H, W, C, max_h=self.max_h, max_w=self.max_w)
+
+            # softplus(u) ~= init_beta  => u ~= log(exp(init_beta)-1)
+            init_beta_u = math.log(math.expm1(self.init_beta) + 1e-6)
+            self.beta = nn.Parameter(torch.full(base, init_beta_u, device=x.device, dtype=x.dtype))
+
+            self._C = C
+
+            if self.use_gate != "none":
+                self.t = nn.Parameter(torch.full(base, self.init_gate, device=x.device, dtype=x.dtype))
+
+        else:
+            if self.mode in ("dim", "voxel") and self._C is not None and C != self._C:
+                raise ValueError(f"Channel size C changed from {self._C} to {C} for mode='{self.mode}'.")
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        self._maybe_init(x)
+        H, W, _ = _infer_hwc(x)
+
+        beta = self.beta
+        if beta is None:
+            return F.silu(x)
+
+        if self.mode in ("token", "voxel"):
+            beta = _slice_hw(beta, H, W)
+            t = _slice_hw(self.t, H, W) if self.t is not None else None
+        else:
+            t = self.t
+
+        # Broadcast params up to x.ndim
+        while beta.ndim < x.ndim:
+            beta = beta.unsqueeze(0)
+            if t is not None:
+                t = t.unsqueeze(0)
+
+        beta_pos = F.softplus(beta)
+        swish = x * torch.sigmoid(beta_pos * x)
+
+        if self.use_gate == "none":
+            return swish
+
+        if t is None:
+            return swish
+
+        if self.use_gate == "soft":
+            gate = torch.sigmoid(t)
+            return swish * gate + x * (1.0 - gate)
+
+        if self.use_gate == "hard":
+            gate = _hard_sigmoid_st(t)
+            return swish * gate + x * (1.0 - gate)
+
+        if self.use_gate == "residual":
+            gate = torch.sigmoid(t)
+            return x + gate * (swish - x)
+
+        raise ValueError(f"Unknown use_gate='{self.use_gate}'. Expected one of ['soft','hard','none','residual'].")
+
+
 
 
 class FlexGELU(nn.Module):
@@ -255,7 +360,7 @@ class FlexFourier(nn.Module):
 
         residual = (a * torch.sin(w * x_e + p)).sum(dim=-1)  # [..., H, W, C]
 
-        if self.use_gate != "none":
+        if self.use_gate == "none":
             return residual
         elif self.use_gate == "residual":
             return x + residual  # <-- identity at init when a==0
@@ -299,6 +404,7 @@ class FlexSpline(nn.Module):
         self.use_gate = use_gate
         self.init_t = 1
 
+        # print("use_gate = ", use_gate)
         # print("use flexspline")
 
     def _maybe_init(self, x: torch.Tensor):
@@ -370,7 +476,7 @@ class FlexSpline(nn.Module):
         t = (x_clamped - x0) / (x1 - x0 + 1e-12)
         residual = t * (y1 - y0)
 
-        if self.use_gate != "none":
+        if self.use_gate == "none":
             return residual
         elif self.use_gate == "residual":
             return y0 + residual  # <-- identity at init when a==0
@@ -470,7 +576,7 @@ class FlexPolynomial(nn.Module):
 
         residual = y
 
-        if self.use_gate != "none":
+        if self.use_gate == "none":
             return residual
         elif self.use_gate == "residual":
             return x + residual  # <-- identity at init when a==0
@@ -498,6 +604,8 @@ def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Mod
         act = FlexReLU(mode=mode, **kwargs)
     elif k == "gelu":
         act = FlexGELU(mode=mode, **kwargs)
+    elif k == "swish":
+        act = FlexSwish(mode=mode, **kwargs)
     elif k == "fourier":
         act = FlexFourier(mode=mode, **kwargs)
     elif k == "spline":

@@ -49,7 +49,7 @@ else:
 
 
 print("cache_dir =", cache_dir)
-DEBUG = True
+DEBUG = False
 
 
 # -------------------------

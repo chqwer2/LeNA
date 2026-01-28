@@ -32,6 +32,8 @@ model=meta-llama/Meta-Llama-3-8B    # Test
 
 
 
+use_gate = none | residual | soft | hard
+
 
 ```bash
 CUDA_VISIBLE_DEVICES=0  python Llama_Adaptation.py \
@@ -101,21 +103,18 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --eval_step 10 \
   --save_step 100 \
   --device auto \
-  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
-  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
+  --lora_r 32 --lora_alpha 64  --lora_dropout 0.05 \
+  --lora_target_modules q_proj,k_proj,up_proj,down_proj \
   --methods lena \
   --lena_activations fourier \
-  --lena_flex_mode "spatial" \
+  --lena_flex_mode "token" \
   --lena_gate_type none \
   --lena_gate_position after_b \
   --lena_gate_mode voxel \
-  --gate_strength ${strength} \
-  --lena_activation_kwargs_json '{"n_terms":5,"init_scale":0.01, "use_gate": "hard"}'   >> output.txt
+  --lena_activation_kwargs_json '{"n_terms":5,"init_scale":0.01, "use_gate": "hard"}'  
 
 ```
-
-
-
+[//]: # ( >> output.txt)
 
 ## 3.2 FLoRA + Spline (channel), gate OFF
 
@@ -124,7 +123,7 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --base_model "$model" \
   --dataset "$dataset" \
   --output_dir runs/lena_spline_channel \
-  --batch_size 1 \
+  --batch_size 16 \
   --num_epochs 3 \
   --learning_rate 3e-4 \
   --cutoff_len 512 \
@@ -135,7 +134,7 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --lora_target_modules q_proj,k_proj,v_proj,up_proj,down_proj \
   --methods lena \
   --lena_activations spline \
-  --lena_flex_mode dim \
+  --lena_flex_mode token \
   --lena_gate_type none \
   --lena_gate_position after_b \
   --lena_activation_kwargs_json '{"n_knots":16,"x_min":-3.0,"x_max":3.0,"init":"identity", "use_gate": "hard"}'  
@@ -163,18 +162,19 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --eval_step 10 \
   --save_step 100 \
   --device auto \
-  --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
-  --lora_target_modules q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj \
+   --lora_r 32 --lora_alpha 64  --lora_dropout 0.05 \
+  --lora_target_modules q_proj,k_proj,v_proj,up_proj,down_proj \
   --methods lena \
   --lena_activations polynomial \
-  --lena_flex_mode channel \
   --lena_gate_type none \
   --lena_gate_position after_b \
-  --lena_activation_kwargs_json '{"degree":3,"init":"identity", "use_gate": "hard"}'   >> output.txt
-   
+  --lena_activation_kwargs_json '{"degree":3,"init":"identity", "use_gate": "none"}' \
+    --lena_flex_mode token  
   
 ```
 
+[//]: # ( >> output.txt)
+[//]: # (o_proj,gate_proj,)
 ---
 
 # 4) FLoRA + gate examples (activation can be on or off)
