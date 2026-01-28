@@ -5,6 +5,7 @@ from typing import Any, Literal, Optional, Tuple
 import math
 import torch
 import torch.nn as nn
+import math
 
 FlexMode = Literal["global", "token", "dim", "voxel"]
 ActKind = Literal["identity", "relu", "swish", "gelu", "fourier", "spline", "polynomial"]
@@ -298,22 +299,20 @@ class FlexSpline(nn.Module):
         self.use_gate = use_gate
         self.init_t = 1
 
+        # print("use flexspline")
+
     def _maybe_init(self, x: torch.Tensor):
         H, W, C = _infer_hwc(x)
 
-
-
         if self.knots_x.device != x.device or self.knots_x.dtype != x.dtype:
             self.knots_x = self.knots_x.to(device=x.device, dtype=x.dtype)
-
-
 
         if self.knots_y is None:
             base = _param_base_shape(self.mode, H, W, C, max_h=self.max_h, max_w=self.max_w)
             shape = base + (self.n_knots,)
 
-            print("self.mode:", self.mode, base.flatten().numel())
 
+            # print("self.mode:", self.mode, "numel:", math.prod(base), "shape:", base)
 
             if self.init == "identity":
                 ky = self.knots_x.view(1, 1, 1, -1).expand(*base, self.n_knots).clone()

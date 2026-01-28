@@ -135,7 +135,7 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --lora_target_modules q_proj,k_proj,v_proj,up_proj,down_proj \
   --methods lena \
   --lena_activations spline \
-  --lena_flex_mode voxel \
+  --lena_flex_mode dim \
   --lena_gate_type none \
   --lena_gate_position after_b \
   --lena_activation_kwargs_json '{"n_knots":16,"x_min":-3.0,"x_max":3.0,"init":"identity", "use_gate": "hard"}'  
