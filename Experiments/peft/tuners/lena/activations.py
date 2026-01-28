@@ -483,7 +483,7 @@ class FlexPolynomial(nn.Module):
 # Factory
 # -----------------------
 
-def make_flora_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Module:
+def make_lena_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Module:
     k = str(kind).lower()
     if k == "identity":
         act = IdentityAct()
@@ -498,7 +498,7 @@ def make_flora_activation(kind: ActKind, mode: FlexMode, **kwargs: Any) -> nn.Mo
     elif k == "polynomial":
         act = FlexPolynomial(mode=mode, **kwargs)
     else:
-        raise ValueError(f"Unknown flora activation kind: {kind}")
+        raise ValueError(f"Unknown lena activation kind: {kind}")
 
     # helpful for debugging / FLOPs estimation
     setattr(act, "kind", k)

@@ -6,8 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .activations import make_flora_activation
-from .config import FloraConfig
+from .activations import make_lena_activation
+from .config import LeNAConfig
 from .gates import Gate
 
 from copy import deepcopy
@@ -44,9 +44,9 @@ def _from_hwc(z_hwc: torch.Tensor, orig_ndim: int) -> torch.Tensor:
     raise ValueError("orig_ndim must be >=2")
 
 
-class FloraLinear(nn.Module):
+class LeNALinear(nn.Module):
     """
-    PEFT-compatible FloraLinear:
+    PEFT-compatible LeNALinear:
       - Keeps __init__(base_layer, module_key=None) (what PEFT expects)
       - Stores A/B as lora_A/lora_B so PEFT will mark them trainable
       - You can still refer to A/B if you like via aliases
@@ -56,7 +56,7 @@ class FloraLinear(nn.Module):
     def __init__(self, base_layer: nn.Linear, module_key: Optional[str] = None):
         super().__init__()
         if not isinstance(base_layer, nn.Linear):
-            raise TypeError(f"FloraLinear only supports nn.Linear, got {type(base_layer)}")
+            raise TypeError(f"LeNALinear only supports nn.Linear, got {type(base_layer)}")
 
         self.base_layer = base_layer
         self.module_key = module_key or "<unknown>"
@@ -111,14 +111,14 @@ class FloraLinear(nn.Module):
         # PEFT will call this
         self._active_adapter = name
 
-    def add_adapter(self, adapter_name: str, cfg: FloraConfig):
+    def add_adapter(self, adapter_name: str, cfg: lenaConfig):
         """
         PEFT calls this (usually adapter_name == "default").
         The key fix is: put A/B into lora_A/lora_B so PEFT will unfreeze them.
         """
         r = int(cfg.r)
         if r <= 0:
-            raise ValueError("FloraConfig.r must be > 0")
+            raise ValueError("lenaConfig.r must be > 0")
 
         # Create A/B
         A = nn.Linear(self.in_features, r, bias=False)
@@ -147,16 +147,16 @@ class FloraLinear(nn.Module):
         # This is for LoRA
         # self.scaling[adapter_name] = float(cfg.lora_alpha) / float(r)
 
-        flora_nonlinear_scale = 1.0
-        self.scaling[adapter_name] = float(cfg.lora_alpha) / float(r) * flora_nonlinear_scale
+        lena_nonlinear_scale = 1.0
+        self.scaling[adapter_name] = float(cfg.lora_alpha) / float(r) * lena_nonlinear_scale
 
         self.norm_before_act[adapter_name] = nn.LayerNorm(r)
 
         # activation (can be identity)
-        self.act[adapter_name] = make_flora_activation(
-            kind=cfg.flora_activation,
-            mode=cfg.flora_flex_mode,
-            **(cfg.flora_activation_kwargs or {}),
+        self.act[adapter_name] = make_lena_activation(
+            kind=cfg.lena_activation,
+            mode=cfg.lena_flex_mode,
+            **(cfg.lena_activation_kwargs or {}),
         )
 
         # weight_norm
@@ -179,12 +179,12 @@ class FloraLinear(nn.Module):
             )
 
         # gates (can be identity)
-        gate_type = str(getattr(cfg, "flora_gate_type", "none")).lower()
-        gate_pos = str(getattr(cfg, "flora_gate_position", "after_b")).lower()
-        gate_init = float(getattr(cfg, "flora_gate_init", 1))
+        gate_type = str(getattr(cfg, "lena_gate_type", "none")).lower()
+        gate_pos = str(getattr(cfg, "lena_gate_position", "after_b")).lower()
+        gate_init = float(getattr(cfg, "lena_gate_init", 1))
         init_a = 0.0 if gate_type == "rezero" else gate_init
         init_b = 0.0 if gate_type == "rezero" else gate_init
-        mode = str(getattr(cfg, "flora_gate_mode", "global")).lower()
+        mode = str(getattr(cfg, "lena_gate_mode", "global")).lower()
         gate_strength = str(getattr(cfg, "gate_strength", "soft")).lower()
 
         if gate_type != "none" and gate_pos in ("after_a", "both"):
@@ -215,11 +215,11 @@ class FloraLinear(nn.Module):
 
         # debug flags
         self._dbg[adapter_name] = {
-            "debug": bool(getattr(cfg, "flora_debug", False)),
-            "verbose": bool(getattr(cfg, "flora_debug_verbose", False)),
-            "forward": bool(getattr(cfg, "flora_debug_forward", False)),
-            "forward_once": bool(getattr(cfg, "flora_debug_forward_once", True)),
-            "check_nan": bool(getattr(cfg, "flora_debug_check_nan", False)),
+            "debug": bool(getattr(cfg, "lena_debug", False)),
+            "verbose": bool(getattr(cfg, "lena_debug_verbose", False)),
+            "forward": bool(getattr(cfg, "lena_debug_forward", False)),
+            "forward_once": bool(getattr(cfg, "lena_debug_forward_once", True)),
+            "check_nan": bool(getattr(cfg, "lena_debug_check_nan", False)),
         }
         self._forward_logged[adapter_name] = False
 

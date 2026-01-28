@@ -7,36 +7,36 @@ import torch.nn as nn
 
 from peft.tuners.lora import LoraModel
 
-from .config import FloraConfig
-from .layer import FloraLinear
+from .config import LeNAConfig
+from .layer import LeNALinear
 
 
 @dataclass
-class FloraDebugRecord:
+class LeNADebugRecord:
     replaced: List[str] = field(default_factory=list)
     skipped_not_target: List[str] = field(default_factory=list)
     skipped_wrong_type: List[str] = field(default_factory=list)
     skipped_already_wrapped: List[str] = field(default_factory=list)
 
 
-class FloraModel(LoraModel):
-    prefix = "flora_"
+class LeNAModel(LoraModel):
+    prefix = "lena_"
 
     def _check_merge_allowed(self):
         for name in self.active_adapters:
             cfg = self.peft_config[name]
-            act = str(getattr(cfg, "flora_activation", "identity")).lower()
-            gate = str(getattr(cfg, "flora_gate_type", "none")).lower()
+            act = str(getattr(cfg, "lena_activation", "identity")).lower()
+            gate = str(getattr(cfg, "lena_gate_type", "none")).lower()
             allow_merge = bool(getattr(cfg, "allow_merge", False))
             if (act != "identity" or gate != "none") and not allow_merge:
                 raise ValueError(
-                    f"Flora cannot be merged when flora_activation='{act}' or flora_gate_type='{gate}'. "
+                    f"LeNA cannot be merged when lena_activation='{act}' or lena_gate_type='{gate}'. "
                     "Set both to identity/none for pure LoRA merge."
                 )
 
     def _create_and_replace(
         self,
-        peft_config: FloraConfig,
+        peft_config: LeNAConfig,
         adapter_name: str,
         target: nn.Module,
         target_name: str,
@@ -45,32 +45,32 @@ class FloraModel(LoraModel):
         **optional_kwargs,
     ):
         # Build/attach debug record to config (per adapter)
-        if not hasattr(peft_config, "flora_debug_report"):
-            peft_config.flora_debug_report = FloraDebugRecord()  # type: ignore[attr-defined]
-        report: FloraDebugRecord = peft_config.flora_debug_report  # type: ignore[attr-defined]
+        if not hasattr(peft_config, "lena_debug_report"):
+            peft_config.lena_debug_report = LeNADebugRecord()  # type: ignore[attr-defined]
+        report: LeNADebugRecord = peft_config.lena_debug_report  # type: ignore[attr-defined]
 
-        debug = bool(getattr(peft_config, "flora_debug", False))
-        verbose = bool(getattr(peft_config, "flora_debug_verbose", False))
+        debug = bool(getattr(peft_config, "lena_debug", False))
+        verbose = bool(getattr(peft_config, "lena_debug_verbose", False))
 
         if verbose:
             print(f"[FLORA:CHECK] {current_key} ({type(target).__name__})")
 
         # If module already wrapped
-        if isinstance(target, FloraLinear):
+        if isinstance(target, LeNALinear):
             report.skipped_already_wrapped.append(current_key)
             if debug and verbose:
-                print(f"[FLORA:SKIP] {current_key}: already FloraLinear")
+                print(f"[FLORA:SKIP] {current_key}: already LeNALinear")
             return
 
         # Replace only Linear (minimal). Other module types will be handled by LoRA fallback.
         if isinstance(target, nn.Linear):
-            new_module = FloraLinear(target, module_key=current_key)
+            new_module = LeNALinear(target, module_key=current_key)
             new_module.add_adapter(adapter_name, peft_config)
             setattr(parent, target_name, new_module)
 
             report.replaced.append(current_key)
             if debug:
-                print(f"[FLORA:REPLACE] {current_key}: Linear -> FloraLinear")
+                print(f"[FLORA:REPLACE] {current_key}: Linear -> LeNALinear")
             return
 
         # If it *was* a target but wrong type, record it (only if you want strict behavior)
@@ -89,7 +89,7 @@ class FloraModel(LoraModel):
             **optional_kwargs,
         )
 
-    def flora_print_debug_report(self, adapter_name: Optional[str] = None):
+    def lena_print_debug_report(self, adapter_name: Optional[str] = None):
         """
         Convenience method: prints the stored report.
         """
@@ -99,7 +99,7 @@ class FloraModel(LoraModel):
             print("[FLORA] No active adapter.")
             return
         cfg = self.peft_config[adapter_name]
-        report = getattr(cfg, "flora_debug_report", None)
+        report = getattr(cfg, "lena_debug_report", None)
         if report is None:
             print("[FLORA] No debug report found.")
             return

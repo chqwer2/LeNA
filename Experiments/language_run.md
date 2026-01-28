@@ -6,23 +6,23 @@ pip install transformers -U`
 # 1) LoRA training command (your script already supports this)
 
 # huggyllama/llama-7b | microsoft/phi-2  | meta-llama/Llama-3.2-1B  | meta-llama/Llama-3.2-3B
- 
-#  google/boolq | piqa | allenai/social_i_qa | Rowan/hellaswag | allenai/winogrande (winogrande_xl) allenai/ai2_arc (ARC-Easy) allenai/openbookqa (main)
 
-dataset=google/boolq
-dataset=piqa
 
-                   # no config
-ds = load_dataset("social_i_qa")                # no config
-ds = load_dataset("hellaswag")                  # no config
-ds = load_dataset("winogrande", "winogrande_xl")
-ds = load_dataset("ai2_arc", "ARC-Easy")
-ds = load_dataset("openbookqa", "main")
+dataset="google/boolq \
+         piqa \
+         allenai/social_i_qa \
+         Rowan/hellaswag \
+         allenai/winogrande \
+         allenai/ai2_arc:ARC-Easy \
+         allenai/ai2_arc:ARC-Challenge \
+         allenai/openbookqa" 
 
 
 
 conda activate lora
 cd ~/hao/repo/FLoRA/Experiments
+
+
 model=meta-llama/Llama-3.2-1B     # Test
 
 model=meta-llama/Llama-2-7b-hf
@@ -38,7 +38,7 @@ dataset=google/boolq
 ```bash
 CUDA_VISIBLE_DEVICES=0  python Llama_Adaptation.py \
   --base_model $model \
-  --data_path $dataset \
+  --dataset $dataset \
   --output_dir runs/lora \
   --batch_size 1 \
   --num_epochs 3 \
@@ -58,7 +58,7 @@ CUDA_VISIBLE_DEVICES=0  python Llama_Adaptation.py \
 # 2) DoRA
 CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py  \
   --base_model $model \
-  --data_path $dataset \
+  --dataset $dataset \
   --output_dir runs/dora \
   --batch_size 1 \
   --num_epochs 3 \
@@ -90,7 +90,7 @@ strength=soft
 strength=hard
 CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --base_model "$model" \
-  --data_path "$dataset" \
+  --dataset "$dataset" \
   --output_dir runs/flora_fourier_channel \
   --batch_size 1 \
   --num_epochs 3 \
@@ -122,7 +122,7 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
 ```bash
 CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --base_model "$model" \
-  --data_path "$dataset" \
+  --dataset "$dataset" \
   --output_dir runs/flora_spline_channel \
   --batch_size 1 \
   --num_epochs 3 \
@@ -152,7 +152,7 @@ CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
 ```bash
 CUDA_VISIBLE_DEVICES=0 python Llama_Adaptation.py \
   --base_model "$model" \
-  --data_path "$dataset" \
+  --dataset "$dataset" \
   --output_dir runs/flora_poly_channel \
     --batch_size 1 \
   --num_epochs 3 \
@@ -184,7 +184,7 @@ Below I keep Fourier as your example, and still route Fourier params through JSO
 ```bash
 CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --base_model "$model" \
-  --data_path "$dataset" \
+  --dataset "$dataset" \
   --output_dir runs/flora_fourier_gate_after_a \
   --batch_size 1 --num_epochs 3 --learning_rate 3e-4 --cutoff_len 512 \
   --eval_step 10 --save_step 100 --device auto \
@@ -201,7 +201,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
 ```bash
 CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --base_model "$model" \
-  --data_path "$dataset" \
+  --dataset "$dataset" \
   --output_dir runs/flora_fourier_gate_after_b \
   --batch_size 1 --num_epochs 3 --learning_rate 3e-4 --cutoff_len 512 \
   --eval_step 10 --save_step 100 --device auto \
@@ -218,7 +218,7 @@ CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
 ```bash
 CUDA_VISIBLE_DEVICES=1 python Llama_Adaptation.py \
   --base_model "$model" \
-  --data_path "$dataset" \
+  --dataset "$dataset" \
   --output_dir runs/flora_fourier_gate_both \
   --batch_size 1 --num_epochs 3 --learning_rate 3e-4 --cutoff_len 512 \
   --eval_step 10 --save_step 100 --device auto \

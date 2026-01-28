@@ -118,8 +118,8 @@ from .tuners import (
     create_arrow_model,
     get_eva_state_dict,
     initialize_lora_eva_weights,
-    FloraModel,
-    FloraConfig
+    LeNAModel,
+    LeNAConfig
 )
 from .utils import (
     TRANSFORMERS_MODELS_TO_PREFIX_TUNING_POSTPROCESS_MAPPING,

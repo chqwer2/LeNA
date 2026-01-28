@@ -82,7 +82,7 @@ class PeftType(str, enum.Enum):
     OSF = "OSF"
     DELORA = "DELORA"
     GRALORA = "GRALORA"
-    FLORA = "FLORA"
+    LENA = "LENA"
 
 
 class TaskType(str, enum.Enum):

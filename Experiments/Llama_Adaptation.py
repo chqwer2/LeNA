@@ -22,8 +22,8 @@ from peft import (
     prepare_model_for_kbit_training,
 )
 
-# If your fork exports FloraConfig from peft
-from peft import FloraConfig
+# If your fork exports LeNAConfig from peft
+from peft import LeNAConfig
 
 
 # -------------------------
@@ -108,7 +108,7 @@ def format_example_to_text(data_path: str, ex: Dict[str, Any]) -> str:
 
     # ---- ybisk/piqa ----
     # fields: goal, sol1, sol2, label (0/1)
-    if dp == "ybisk/piqa":
+    if dp in ("piqa", "ybisk/piqa"):
         label = int(ex["label"]) if ex.get("label", -1) is not None else -1
         solutions = [ex["sol1"], ex["sol2"]]
         correct = solutions[label] if label in (0, 1) else ""
@@ -164,7 +164,7 @@ def format_example_to_text(data_path: str, ex: Dict[str, Any]) -> str:
 
     # ---- allenai/winogrande (winogrande_xl) ----
     # fields: sentence (with _), option1, option2, answer ("1"/"2")
-    if dp == "allenai/winogrande":
+    if dp.startswith("allenai/winogrande"):
         sentence = ex["sentence"]
         opt1, opt2 = ex["option1"], ex["option2"]
         raw = ex.get("answer", None)
@@ -186,11 +186,12 @@ def format_example_to_text(data_path: str, ex: Dict[str, Any]) -> str:
     # ---- allenai/ai2_arc (ARC-Easy) ----
     # fields: question: {stem, choices:[{label,text}...]}, answerKey
     if dp == "allenai/ai2_arc":
-        q = ex["question"]
-        stem = q["stem"]
-        choices = [(c["label"], c["text"]) for c in q["choices"]]
+        stem = ex.get("question", "")
+        ch = ex.get("choices", {})  # dict with "label": [...], "text": [...]
+        labels = ch.get("label", [])
+        texts = ch.get("text", [])
+        choices = list(zip(labels, texts))
         ans_key = ex.get("answerKey", "")
-        # find matching choice text
         choice_dict = {lab: txt for lab, txt in choices}
         correct = choice_dict.get(ans_key, "")
         return (
@@ -347,13 +348,13 @@ def tokenize_and_split(dataset: DatasetDict, data_path: str, tokenizer, cutoff_l
 # -------------------------
 # Trainable params control
 # -------------------------
-def set_trainable_only_flora(model):
+def set_trainable_only_lena(model):
     """
     Freezes everything EXCEPT FLoRA-related params:
       - A/B
       - activation module params
       - gate params
-    Works if your injected modules are FloraLinear/FloraConv1D with:
+    Works if your injected modules are LeNALinear/LeNAConv1D with:
       A, B, act, gate_after_a, gate_after_b (ModuleDicts)
     """
     for p in model.parameters():
@@ -361,10 +362,10 @@ def set_trainable_only_flora(model):
 
     for _, mod in model.named_modules():
         cls = mod.__class__.__name__
-        if cls not in ("FloraLinear", "FloraConv1D"):
+        if cls not in ("LeNALinear", "LeNAConv1D"):
             continue
 
-        for attr in ("A", "B", "act", "gate_after_a", "gate_after_b", "flora_A", "flora_B", "flora_act"):
+        for attr in ("A", "B", "act", "gate_after_a", "gate_after_b", "lena_A", "lena_B", "lena_act"):
             d = getattr(mod, attr, None)
             if d is None:
                 continue
@@ -434,13 +435,13 @@ def build_peft_config(
     lora_alpha: int,
     lora_dropout: float,
     target_modules: List[str],
-    flora_activation: str,
-    flora_flex_mode: str,
-    flora_activation_kwargs: Dict,
-    flora_gate_type: str,
-    flora_gate_position: str,
-    flora_debug: bool = False,
-    flora_gate_mode="global",
+    lena_activation: str,
+    lena_flex_mode: str,
+    lena_activation_kwargs: Dict,
+    lena_gate_type: str,
+    lena_gate_position: str,
+    lena_debug: bool = False,
+    lena_gate_mode="global",
     gate_strength="hard",
 ):
     method = method.lower()
@@ -454,22 +455,22 @@ def build_peft_config(
             bias="none",
         )
 
-    if method == "flora":
-        return FloraConfig(
+    if method == "lena":
+        return LeNAConfig(
             r=lora_r,
             lora_alpha=lora_alpha,
             lora_dropout=lora_dropout,
             target_modules=target_modules,
-            flora_activation=flora_activation,
-            flora_flex_mode=flora_flex_mode,
-            flora_activation_kwargs=flora_activation_kwargs,
-            flora_gate_type=flora_gate_type,
-            flora_gate_position=flora_gate_position,
-            flora_debug=flora_debug,
-            flora_debug_verbose=False,
-            flora_debug_forward=False,
-            flora_debug_check_nan=True,
-            flora_gate_mode=flora_gate_mode,
+            lena_activation=lena_activation,
+            lena_flex_mode=lena_flex_mode,
+            lena_activation_kwargs=lena_activation_kwargs,
+            lena_gate_type=lena_gate_type,
+            lena_gate_position=lena_gate_position,
+            lena_debug=lena_debug,
+            lena_debug_verbose=False,
+            lena_debug_forward=False,
+            lena_debug_check_nan=True,
+            lena_gate_mode=lena_gate_mode,
             gate_strength=gate_strength,
         )
 
@@ -494,15 +495,15 @@ def build_grouped_optimizer(
 
     # Helper: classify params by name
     def is_act(n: str) -> bool:
-        # covers: FloraLinear.act.<key>.<param>, Flex* params, etc.
-        return (".act." in n) or ("flora_act" in n) or (n.endswith(".knots_y")) or (n.endswith(".c"))
+        # covers: LeNALinear.act.<key>.<param>, Flex* params, etc.
+        return (".act." in n) or ("lena_act" in n) or (n.endswith(".knots_y")) or (n.endswith(".c"))
 
     def is_gate(n: str) -> bool:
-        return (".gate_after_" in n) or ("flora_gate" in n) or ("gate_after" in n)
+        return (".gate_after_" in n) or ("lena_gate" in n) or ("gate_after" in n)
 
     def is_adapter(n: str) -> bool:
-        # LoRA/DoRA names vary; for your FloraLinear it might be A/B or flora_A/flora_B
-        return (".A." in n) or (".B." in n) or ("flora_A" in n) or ("flora_B" in n) or ("lora_" in n)
+        # LoRA/DoRA names vary; for your LeNALinear it might be A/B or lena_A/lena_B
+        return (".A." in n) or (".B." in n) or ("lena_A" in n) or ("lena_B" in n) or ("lora_" in n)
 
     # Collect trainable params
     named = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
@@ -541,7 +542,7 @@ def build_grouped_optimizer(
     add(groups["act_nodecay"],       base_lr * act_lr_mult, 0.0)
     add(groups["gate_nodecay"],      base_lr * gate_lr_mult, 0.0)
 
-    # If you truly only train flora params, these "other" groups will be empty.
+    # If you truly only train lena params, these "other" groups will be empty.
     add(groups["other_decay"],       base_lr, weight_decay)
     add(groups["other_nodecay"],     base_lr, 0.0)
 
@@ -579,7 +580,7 @@ def debug_trainables(model, method: str, topn_layers: int = 10):
     """
     Prints:
       - total/trainable params
-      - per-category trainable params (A/B/act/gate for flora; lora_* for lora/dora)
+      - per-category trainable params (A/B/act/gate for lena; lora_* for lora/dora)
       - how many layers have A/B/act/gate present + trainable
       - sanity checks (are A/B present at all?)
     """
@@ -601,18 +602,18 @@ def debug_trainables(model, method: str, topn_layers: int = 10):
             continue
         n = name.lower()
 
-        if method.lower() == "flora":
-            # A/B in your FloraLinear are ModuleDict entries: "...A.<adapter>.weight" / "...B.<adapter>.weight"
-            if re.search(r"\.a\.[^.]+\.(weight|bias)$", n) or "flora_a" in n:
-                buckets["flora_A"].append(p)
-            elif re.search(r"\.b\.[^.]+\.(weight|bias)$", n) or "flora_b" in n:
-                buckets["flora_B"].append(p)
-            elif ".act." in n or "flora_act" in n or n.endswith((".knots_y", ".c")):
-                buckets["flora_act"].append(p)
-            elif "gate_after_a" in n or "gate_after_b" in n or "flora_gate" in n:
-                buckets["flora_gate"].append(p)
+        if method.lower() == "lena":
+            # A/B in your LeNALinear are ModuleDict entries: "...A.<adapter>.weight" / "...B.<adapter>.weight"
+            if re.search(r"\.a\.[^.]+\.(weight|bias)$", n) or "lena_a" in n:
+                buckets["lena_A"].append(p)
+            elif re.search(r"\.b\.[^.]+\.(weight|bias)$", n) or "lena_b" in n:
+                buckets["lena_B"].append(p)
+            elif ".act." in n or "lena_act" in n or n.endswith((".knots_y", ".c")):
+                buckets["lena_act"].append(p)
+            elif "gate_after_a" in n or "gate_after_b" in n or "lena_gate" in n:
+                buckets["lena_gate"].append(p)
             else:
-                buckets["flora_other"].append(p)
+                buckets["lena_other"].append(p)
 
         else:
             # PEFT LoRA/DoRA commonly uses names: lora_A, lora_B, lora_magnitude_vector, etc.
@@ -629,19 +630,19 @@ def debug_trainables(model, method: str, topn_layers: int = 10):
     for k in sorted(buckets.keys()):
         print(f"[DBG] trainable bucket {k:>12s}: {nparams(buckets[k]):,} params in {len(buckets[k])} tensors")
 
-    # ---- Layer/module counts (flora) ----
-    if method.lower() == "flora":
-        flora_layers = [(n, m) for n, m in model.named_modules() if m.__class__.__name__ == "FloraLinear"]
-        print(f"[DBG] Num FloraLinear modules: {len(flora_layers)}")
-        print("[DBG] First few FloraLinear:", [n for n, _ in flora_layers[:topn_layers]])
+    # ---- Layer/module counts (lena) ----
+    if method.lower() == "lena":
+        lena_layers = [(n, m) for n, m in model.named_modules() if m.__class__.__name__ == "LeNALinear"]
+        print(f"[DBG] Num LeNALinear modules: {len(lena_layers)}")
+        print("[DBG] First few LeNALinear:", [n for n, _ in lena_layers[:topn_layers]])
 
-        # Count how many FloraLinear have A/B/act/gates populated and how many of those params are trainable
+        # Count how many LeNALinear have A/B/act/gates populated and how many of those params are trainable
         cnt = {
             "has_A": 0, "has_B": 0, "has_act": 0, "has_gateA": 0, "has_gateB": 0,
             "trainable_A_params": 0, "trainable_B_params": 0, "trainable_act_params": 0, "trainable_gate_params": 0,
         }
 
-        for lname, layer in flora_layers:
+        for lname, layer in lena_layers:
             # present?
             hasA = hasattr(layer, "A") and len(getattr(layer, "A", {})) > 0
             hasB = hasattr(layer, "B") and len(getattr(layer, "B", {})) > 0
@@ -677,14 +678,14 @@ def debug_trainables(model, method: str, topn_layers: int = 10):
                     for p in getattr(mod, "parameters", lambda: [])():
                         if p.requires_grad: cnt["trainable_gate_params"] += p.numel()
 
-        print("[DBG] FloraLinear container presence:",
-              f"A:{cnt['has_A']}/{len(flora_layers)}",
-              f"B:{cnt['has_B']}/{len(flora_layers)}",
-              f"act:{cnt['has_act']}/{len(flora_layers)}",
-              f"gateA:{cnt['has_gateA']}/{len(flora_layers)}",
-              f"gateB:{cnt['has_gateB']}/{len(flora_layers)}")
+        print("[DBG] LeNALinear container presence:",
+              f"A:{cnt['has_A']}/{len(lena_layers)}",
+              f"B:{cnt['has_B']}/{len(lena_layers)}",
+              f"act:{cnt['has_act']}/{len(lena_layers)}",
+              f"gateA:{cnt['has_gateA']}/{len(lena_layers)}",
+              f"gateB:{cnt['has_gateB']}/{len(lena_layers)}")
 
-        print("[DBG] Trainable params inside FloraLinear:",
+        print("[DBG] Trainable params inside LeNALinear:",
               f"A={cnt['trainable_A_params']:,}",
               f"B={cnt['trainable_B_params']:,}",
               f"act={cnt['trainable_act_params']:,}",
@@ -722,18 +723,18 @@ def train_one_run(
     lora_target_modules: Optional[str],
     method: str,
 
-    flora_activation: str,
-    flora_flex_mode: str,
-    flora_activation_kwargs_json: str,
-    flora_gate_type: str,
-    flora_gate_position: str,
+    lena_activation: str,
+    lena_flex_mode: str,
+    lena_activation_kwargs_json: str,
+    lena_gate_type: str,
+    lena_gate_position: str,
 
-    only_train_flora_params: bool,
+    only_train_lena_params: bool,
     print_forward_mean_ms: bool,
 
     push_to_hub: bool,
     hub_model_id: str,
-    flora_gate_mode="global",
+    lena_gate_mode="global",
     gate_strength="hard",
 ):
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -785,10 +786,10 @@ def train_one_run(
         else ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
 
-    # Parse flora_activation_kwargs
-    flora_activation_kwargs = {}
-    if flora_activation_kwargs_json and flora_activation_kwargs_json.strip():
-        flora_activation_kwargs = json.loads(flora_activation_kwargs_json)
+    # Parse lena_activation_kwargs
+    lena_activation_kwargs = {}
+    if lena_activation_kwargs_json and lena_activation_kwargs_json.strip():
+        lena_activation_kwargs = json.loads(lena_activation_kwargs_json)
 
     # Build PEFT config
     peft_cfg = build_peft_config(
@@ -797,13 +798,13 @@ def train_one_run(
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
         target_modules=target_modules,
-        flora_activation=flora_activation,
-        flora_flex_mode=flora_flex_mode,
-        flora_activation_kwargs=flora_activation_kwargs,
-        flora_gate_type=flora_gate_type,
-        flora_gate_position=flora_gate_position,
-        flora_debug=False,
-        flora_gate_mode=flora_gate_mode,
+        lena_activation=lena_activation,
+        lena_flex_mode=lena_flex_mode,
+        lena_activation_kwargs=lena_activation_kwargs,
+        lena_gate_type=lena_gate_type,
+        lena_gate_position=lena_gate_position,
+        lena_debug=False,
+        lena_gate_mode=lena_gate_mode,
         gate_strength=gate_strength,
     )
 
@@ -827,9 +828,9 @@ def train_one_run(
 
     model.to(device)
 
-    # Freeze everything except flora params if requested
-    if method.lower() == "flora":
-        set_trainable_only_flora(model)
+    # Freeze everything except lena params if requested
+    if method.lower() == "lena":
+        set_trainable_only_lena(model)
 
     total, trainable = count_trainable_params(model)
     print(f"Params: trainable={trainable:,} / total={total:,} ({100*trainable/total:.4f}%)")
@@ -876,14 +877,14 @@ def train_one_run(
         )
 
         # Optional debug slicing per dataset
-        # if DEBUG:
-        #     tr_n = min(20, len(tok["train"]))
-        #     ev_n = min(3200, len(tok["test"]))
-        #     tr_ds = tok["train"].select(range(tr_n))
-        #     te_ds = tok["test"].select(range(ev_n))
-        # else:
-        #     tr_ds = tok["train"]
-        #     te_ds = tok["test"]
+        if DEBUG:
+            tr_n = min(36, len(tok["train"]))
+            ev_n = min(36, len(tok["test"]))
+            tr_ds = tok["train"].select(range(tr_n))
+            te_ds = tok["test"].select(range(ev_n))
+        else:
+            tr_ds = tok["train"]
+            te_ds = tok["test"]
 
         print(f"[DATA] {display} train={len(tr_ds)} test={len(te_ds)}")
 
@@ -939,17 +940,26 @@ def train_one_run(
         eps=1e-8,
     )
 
-
     if DEBUG:
-        tr_n = min(20, len(tokenized["train"]))
-        ev_n = min(3200, len(tokenized["test"]))
+        train_dataset = train_dataset.select(range(min(200, len(train_dataset))))
+        # keep eval datasets small too
+        for k in list(test_splits_by_name.keys()):
+            ds = test_splits_by_name[k]
+            test_splits_by_name[k] = ds.select(range(min(200, len(ds))))
+        first_name = list(test_splits_by_name.keys())[0]
+        eval_dataset = test_splits_by_name[first_name]
 
-        train_dataset = tokenized["train"].select(range(tr_n))
-        eval_dataset  = tokenized["test"].select(range(ev_n))
 
-    else:
-        train_dataset = tokenized["train"]
-        eval_dataset  = tokenized["test"]
+    # if DEBUG:
+    #     tr_n = min(20, len(tokenized["train"]))
+    #     ev_n = min(3200, len(tokenized["test"]))
+    #
+    #     train_dataset = tokenized["train"].select(range(tr_n))
+    #     eval_dataset  = tokenized["test"].select(range(ev_n))
+    #
+    # else:
+    #     train_dataset = tokenized["train"]
+    #     eval_dataset  = tokenized["test"]
 
     print(f"Training dataset={len(train_dataset)}")
     print(f"Evaluation dataset={len(eval_dataset)}")
@@ -1042,7 +1052,7 @@ def build_optimizer_param_groups(
         # --- activation parameters ---
         # matches your Flex* modules: a, k, (fourier) a/w/p, (spline) knots_y, (poly) c
         if any(tok in n for tok in [
-            ".act.", "flora_act", "knots_y",  # module containers / spline
+            ".act.", "lena_act", "knots_y",  # module containers / spline
         ]) or n.endswith((".a", ".k", ".w", ".p", ".c")):
             act_params.append(p)
             continue
@@ -1053,7 +1063,7 @@ def build_optimizer_param_groups(
             continue
 
         # --- adapter parameters (A/B or lora) ---
-        if any(tok in n for tok in ["flora_a", "flora_b", ".a.", ".b.", "lora_", "lora"]):
+        if any(tok in n for tok in ["lena_a", "lena_b", ".a.", ".b.", "lora_", "lora"]):
             adapter_params.append(p)
             continue
 
@@ -1083,26 +1093,26 @@ def build_optimizer_param_groups(
 
 
 # -------------------------
-# Multi-run driver: compare lora/dora/flora variants
+# Multi-run driver: compare lora/dora/lena variants
 # -------------------------
 def run_experiments(
     args,
     base_model: str,
-    data_path: str,
-    data_name: Optional[str],
+    # data_path: str,
+    dataset: Optional[str],
     output_dir: str,
     methods: str,
-    flora_activations: str,
-    flora_flex_mode: str,
-    flora_activation_kwargs_json: str,
-    flora_gate_type: str,
-    flora_gate_position: str,
-    flora_gate_mode="global",
+    lena_activations: str,
+    lena_flex_mode: str,
+    lena_activation_kwargs_json: str,
+    lena_gate_type: str,
+    lena_gate_position: str,
+    lena_gate_mode="global",
     gate_strength="soft",
     **kwargs,
 ):
     method_list = [m.strip() for m in methods.split(",") if m.strip()]
-    flora_act_list = [a.strip() for a in flora_activations.split(",") if a.strip()]
+    lena_act_list = [a.strip() for a in lena_activations.split(",") if a.strip()]
 
     runs = []
 
@@ -1116,20 +1126,20 @@ def run_experiments(
                 # data_name=data_name,
                 output_dir=out,
                 method=m.lower(),
-                flora_activation="identity",
-                flora_flex_mode=flora_flex_mode,
-                flora_activation_kwargs_json=flora_activation_kwargs_json,
-                flora_gate_type="none",
-                flora_gate_position="after_b",
+                lena_activation="identity",
+                lena_flex_mode=lena_flex_mode,
+                lena_activation_kwargs_json=lena_activation_kwargs_json,
+                lena_gate_type="none",
+                lena_gate_position="after_b",
                 **kwargs,
             )
             runs.append(out)
 
-        elif m.lower() == "flora":
-            for act in flora_act_list:
-                tag = f"flora_{act}_{flora_flex_mode}_{flora_gate_type}_{flora_gate_position}"
-                if "gate_strength" in flora_activation_kwargs_json:
-                    if "hard" in flora_activation_kwargs_json:
+        elif m.lower() == "lena":
+            for act in lena_act_list:
+                tag = f"lena_{act}_{lena_flex_mode}_{lena_gate_type}_{lena_gate_position}"
+                if "gate_strength" in lena_activation_kwargs_json:
+                    if "hard" in lena_activation_kwargs_json:
                         tag += "_hard"
                     else:
                         tag += "_soft"
@@ -1140,16 +1150,15 @@ def run_experiments(
 
                 train_one_run(
                     base_model=base_model,
-                    data_path=data_path,
-                    data_name=data_name,
+                    dataset_specs=dataset,
                     output_dir=out,
-                    method="flora",
-                    flora_activation=act,
-                    flora_flex_mode=flora_flex_mode,
-                    flora_activation_kwargs_json=flora_activation_kwargs_json,
-                    flora_gate_type=flora_gate_type,
-                    flora_gate_position=flora_gate_position,
-                    flora_gate_mode=flora_gate_mode,
+                    method="lena",
+                    lena_activation=act,
+                    lena_flex_mode=lena_flex_mode,
+                    lena_activation_kwargs_json=lena_activation_kwargs_json,
+                    lena_gate_type=lena_gate_type,
+                    lena_gate_position=lena_gate_position,
+                    lena_gate_mode=lena_gate_mode,
                     gate_strength=gate_strength,
                     **kwargs,
                 )
@@ -1180,8 +1189,7 @@ if __name__ == "__main__":
              "(e.g., google/boolq or allenai/ai2_arc:ARC-Easy)."
     )
 
-    parser.add_argument("--data_name", type=str, default="", help="Dataset config name, e.g. winogrande_xl, ARC-Easy, main")
-
+    # parser.add_argument("--data_name", type=str, default="", help="Dataset config name, e.g. winogrande_xl, ARC-Easy, main")
     parser.add_argument("--output_dir", type=str, default="./outputs_compare")
 
     parser.add_argument("--batch_size", type=int, default=1)
@@ -1200,21 +1208,21 @@ if __name__ == "__main__":
     parser.add_argument("--lora_dropout", type=float, default=0.05)
     parser.add_argument("--lora_target_modules", type=str, default=None)
 
-    parser.add_argument("--methods", type=str, default="lora,dora,flora",
-                        help="Comma-separated: lora,dora,flora")
+    parser.add_argument("--methods", type=str, default="lora,dora,lena",
+                        help="Comma-separated: lora,dora,lena")
 
-    parser.add_argument("--flora_activations", type=str, default="identity,gelu,fourier",
+    parser.add_argument("--lena_activations", type=str, default="identity,gelu,fourier",
                         help="Comma-separated: identity,relu,gelu,fourier,spline,polynomial")
-    parser.add_argument("--flora_flex_mode", type=str, default="channel",
+    parser.add_argument("--lena_flex_mode", type=str, default="channel",
                         help="global|spatial|channel|voxel")
-    parser.add_argument("--flora_activation_kwargs_json", type=str, default="",
+    parser.add_argument("--lena_activation_kwargs_json", type=str, default="",
                         help='JSON string, e.g. {"n_terms":4,"max_h":512,"max_w":1}.')
-    parser.add_argument("--flora_gate_type", type=str, default="none",
+    parser.add_argument("--lena_gate_type", type=str, default="none",
                         help="none|sigmoid|tanh|rezero")
-    parser.add_argument("--flora_gate_position", type=str, default="after_b",
+    parser.add_argument("--lena_gate_position", type=str, default="after_b",
                         help="after_a|after_b|both")
     parser.add_argument(
-        "--flora_gate_mode",
+        "--lena_gate_mode",
         type=str,
         default="global",
         choices=["global", "spatial", "channel", "voxel"],
@@ -1222,7 +1230,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--gate_strength", type=str, default="soft",)
 
-    parser.add_argument("--only_train_flora_params", action="store_true")
+    parser.add_argument("--only_train_lena_params", action="store_true")
     parser.add_argument("--print_forward_mean_ms", action="store_true")
 
     parser.add_argument("--push_to_hub", action="store_true")
@@ -1233,15 +1241,15 @@ if __name__ == "__main__":
     run_experiments(
         args=args,
         base_model=args.base_model,
-        data_path=args.data_path,
-        data_name=args.data_name.strip() or None,
+        dataset=args.dataset,
+        # data_name=args.data_name.strip() or None,
         output_dir=args.output_dir,
         methods=args.methods,
-        flora_activations=args.flora_activations,
-        flora_flex_mode=args.flora_flex_mode,
-        flora_activation_kwargs_json=args.flora_activation_kwargs_json,
-        flora_gate_type=args.flora_gate_type,
-        flora_gate_position=args.flora_gate_position,
+        lena_activations=args.lena_activations,
+        lena_flex_mode=args.lena_flex_mode,
+        lena_activation_kwargs_json=args.lena_activation_kwargs_json,
+        lena_gate_type=args.lena_gate_type,
+        lena_gate_position=args.lena_gate_position,
 
         batch_size=args.batch_size,
         num_epochs=args.num_epochs,
@@ -1258,8 +1266,8 @@ if __name__ == "__main__":
         lora_target_modules=args.lora_target_modules,
         push_to_hub=args.push_to_hub,
         hub_model_id=args.hub_model_id,
-        only_train_flora_params=args.only_train_flora_params,
+        only_train_lena_params=args.only_train_lena_params,
         print_forward_mean_ms=args.print_forward_mean_ms,
-        flora_gate_mode=args.flora_gate_mode,
+        lena_gate_mode=args.lena_gate_mode,
         gate_strength=args.gate_strength,
     )
