@@ -185,3 +185,7 @@ vocab.json
 wandb/
 .webassets-cache
 wheels/
+
+# /upload defaults
+*.zip
+Experiments/appen/
