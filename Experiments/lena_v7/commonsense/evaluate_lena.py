@@ -20,13 +20,14 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, GenerationConfig
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import lena_v7  # noqa: E402
 from lena_v7 import inject, install_lena_hooks, lena_stream  # noqa: E402
 from finetune_lena import load_tokenizer  # noqa: E402
 
 ALL = ["boolq", "piqa", "social_i_qa", "hellaswag", "winogrande", "ARC-Challenge", "ARC-Easy", "openbookqa"]
 PATTERNS = {"boolq": r"true|false", "piqa": r"solution1|solution2", "hellaswag": r"ending1|ending2|ending3|ending4",
             "winogrande": r"option1|option2"}
-for _d in ("social_i_qa", "ARC-Challenge", "ARC-Easy", "openbookqa"):
+for _d in ("social_i_qa", "ARC-Challenge", "ARC-Easy", "openbookqa", "commonsenseqa", "mmlu"):
     PATTERNS[_d] = r"answer1|answer2|answer3|answer4|answer5"
 
 
@@ -66,8 +67,16 @@ def main():
     p.add_argument("--data_root", default="dataset")
     p.add_argument("--batch_size", type=int, default=1)
     p.add_argument("--limit", type=int, default=0, help="first n examples (smoke tests)")
+    p.add_argument("--sample_seed", type=int, default=-1, help=">= 0: a random --limit examples instead of the first (HellaSwag test.json is ordered by source)")
+    p.add_argument("--out_name", default="eval", help="output folder inside run_dir")
     p.add_argument("--no_cache", action="store_true", help="recompute every prefix (check of the streaming path)")
+    p.add_argument("--min_new_tokens", type=int, default=0, help="1 forbids ending at the first step: with the LLaMA3 tokenizer the protocol prompt otherwise makes beam search return nothing on most HellaSwag prompts")
+    p.add_argument("--compile", action="store_true", help="torch.compile the LeNA fit path (same outputs)")
+    p.add_argument("--neff", action="store_true", help="LeNA-S/R1: causal n_eff runtime patch (vision/lena_mri_ext.py)")
+    p.add_argument("--triton", action="store_true", help="fused Triton kernels for the mode-lena fit (lena_triton.py)")
     args = p.parse_args()
+    lena_v7.set_compile(args.compile)
+    lena_v7.set_triton(args.triton)
 
     cfg = json.load(open(os.path.join(args.run_dir, "lena_config.json")))
     tok = load_tokenizer(args.base_model)
@@ -85,20 +94,27 @@ def main():
             prm.data = sd[n_].to(prm.device, torch.float32)
     model.eval()
     install_lena_hooks(model)
+    if args.neff:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "vision"))
+        import lena_mri_ext
+        assert not args.triton, "--neff needs the PyTorch fit path (no --triton)"
+        lena_mri_ext.install(model, neff=True)
     gen = GenerationConfig(temperature=0.1, top_p=0.75, top_k=40, num_beams=4, max_new_tokens=32,
                            pad_token_id=tok.pad_token_id, eos_token_id=tok.eos_token_id,
-                           use_cache=not args.no_cache)
+                           use_cache=not args.no_cache, min_new_tokens=args.min_new_tokens)
 
-    out_dir = os.path.join(args.run_dir, "eval"); os.makedirs(out_dir, exist_ok=True)
+    out_dir = os.path.join(args.run_dir, args.out_name); os.makedirs(out_dir, exist_ok=True)
     summary = {}
     for ds in args.datasets.split(","):
         data = json.load(open(os.path.join(args.data_root, ds, "test.json")))
         if args.limit:
-            data = data[:args.limit]
+            import random
+            data = [data[i] for i in sorted(random.Random(args.sample_seed).sample(range(len(data)), min(args.limit, len(data))))] if args.sample_seed >= 0 else data[:args.limit]
         correct, records, t0 = 0, [], time.time()
         for i in tqdm(range(0, len(data), args.batch_size), desc=ds):
             batch = data[i:i + args.batch_size]
-            enc = tok([generate_prompt(d["instruction"]) for d in batch], return_tensors="pt", padding=True)
+            prompts = [generate_prompt(d["instruction"]) for d in batch]
+            enc = tok(prompts, return_tensors="pt", padding=True)
             enc = {k: v.to(model.device) for k, v in enc.items()}
             stream = contextlib.nullcontext() if args.no_cache else lena_stream(model)   # state only with a cache
             with torch.no_grad(), stream:

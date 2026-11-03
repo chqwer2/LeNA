@@ -99,6 +99,20 @@ def tri_mv(diag, off, x):
     return y
 
 
+def prefix_stats(u, v, w, lo, hi, K):
+    """Causal statistics: for every position, the sums over the prefix. Returns j, lam, diag, off, m, e, ntok."""
+    j, lam = hat_index(u, lo, hi, K)
+    diag, off, m, e = stats_dense(j, lam, v, w, K)
+    return j, lam, diag.cumsum(1), off.cumsum(1), m.cumsum(1), e.cumsum(1), w.cumsum(1)
+
+
+def pooled_stats(u, v, w, lo, hi, K):
+    """Bidirectional statistics: sums over all positions of each input."""
+    j, lam = hat_index(u, lo, hi, K)
+    diag, off, m, e = stats_dense(j, lam, v, w, K)
+    return j, lam, diag.sum(1), off.sum(1), m.sum(1), e.sum(1), w.sum(1)
+
+
 def fit_and_step(diag, off, m, e, ntok, rho, omega, tau, mode):
     """Channel step of Algorithm 1. All inputs fp32; leading dims arbitrary, rho broadcastable to (..., K).
     Returns theta (..., K) and diagnostics (s, p, F)."""
@@ -126,6 +140,36 @@ def fit_and_step(diag, off, m, e, ntok, rho, omega, tau, mode):
     return rho + s.unsqueeze(-1) * delta, dict(s=s, p=p, F=Fstat)
 
 
+_COMPILE = {"on": False, "fns": {}, "dynamic": True}
+
+
+def set_compile(on=True, dynamic=True):
+    """torch.compile the pure tensor functions of the layer (statistics, fit and step, curve evaluation). The layer
+    otherwise launches a few hundred small kernels per call, which dominates decoding."""
+    _COMPILE["on"] = bool(on)
+    if dynamic != _COMPILE["dynamic"]:
+        _COMPILE["dynamic"], _COMPILE["fns"] = dynamic, {}
+
+
+def _fn(name):
+    f = globals()[name]
+    if not _COMPILE["on"]:
+        return f
+    if name not in _COMPILE["fns"]:
+        _COMPILE["fns"][name] = torch.compile(f, dynamic=_COMPILE["dynamic"])
+    return _COMPILE["fns"][name]
+
+
+_TRITON = {"on": False}
+
+
+def set_triton(on=True):
+    """Fused Triton forward/backward (lena_triton.py) for mode "lena" with the learned or identity prior, causal or
+    pooled, CUDA fp32. Other modes, u_pred / predictor, decoding state, stats record/inject and log_stats keep the
+    PyTorch path."""
+    _TRITON["on"] = bool(on)
+
+
 # ---------------------------------------------------------------------------------------------------------------
 # Context: padding mask, causality and decoding state, shared by every LeNA layer of a model
 # ---------------------------------------------------------------------------------------------------------------
@@ -135,9 +179,25 @@ class _Ctx:
     stream = False     # causal decoding with a KV cache: layers carry prefix statistics across calls
     stream_layers = []
     reordering = False
+    # diagnostics (evaluation only)
+    force_mode = None  # "fixed" (s = 0) | "plain" (s = 1) | "lena": overrides every layer's mode
+    force_prior = None  # "identity": evaluate with the identity ordinates instead of the learned prior
+    stats = None       # "record": keep each layer's statistics at the last position in L._rec
+                       # "inject": use L._inj (B or 1, r, .) at every position instead of the input's own
 
 
 _CTX = _Ctx()
+
+
+@contextmanager
+def lena_override(mode=None, prior=None, stats=None):
+    """Evaluation-time interventions for the element checks (no effect on training)."""
+    old = (_CTX.force_mode, _CTX.force_prior, _CTX.stats)
+    _CTX.force_mode, _CTX.force_prior, _CTX.stats = mode, prior, stats
+    try:
+        yield
+    finally:
+        _CTX.force_mode, _CTX.force_prior, _CTX.stats = old
 
 
 @contextmanager
@@ -255,7 +315,7 @@ class LeNALinear(nn.Module):
 
     def __init__(self, base: nn.Linear, r=8, alpha=16, K=16, lo=-3.0, hi=3.0, tau=1.0, mode="lena",
                  prior="learned", learn_omega=True, freeze_A2=False, dora=False, causal=False, dropout=0.0,
-                 use_checkpoint=True, log_stats=False):
+                 use_checkpoint=True, log_stats=False, base_nl=None):
         super().__init__()
         assert mode in ("lena", "fixed", "plain", "predictor") and prior in ("learned", "identity", "u_pred")
         self.base = base
@@ -275,6 +335,10 @@ class LeNALinear(nn.Module):
         knots = torch.linspace(lo, hi, K, device=dev)
         self.rho = nn.Parameter(knots.repeat(r, 1), requires_grad=prior != "identity")   # identity init
         self.omega = nn.Parameter(torch.zeros((), device=dev), requires_grad=learn_omega)
+        self.anl = None
+        if base_nl == "aurora":                      # LeNA on AuroRA: learned shared non-linearity, per-input residual fit
+            self.anl = ANL(r, r).to(dev)
+            self.rho = nn.Parameter(torch.zeros(r, K, device=dev), requires_grad=False)
         self.prior_net = _mlp(7, K).to(dev) if prior == "u_pred" else None
         self.stat_net = _mlp(3 * K, K).to(dev) if mode == "predictor" else None
         if dora:
@@ -284,6 +348,7 @@ class LeNALinear(nn.Module):
         self.drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
         self.last = None
         self._state = None
+        self.stat_drop = 0.0   # training only: each sample keeps a random fraction in [1 - stat_drop, 1] of its tokens
 
     def extra_repr(self):
         return (f"r={self.r}, K={self.K}, grid=[{self.lo},{self.hi}], tau={self.tau}, mode={self.mode}, "
@@ -309,37 +374,66 @@ class LeNALinear(nn.Module):
     def _codes(self, u, v, w):
         """u, v, w: (B, N, r) (w = token weight). Returns codes (B, N, r) and diagnostics."""
         K = self.K
-        j, lam = hat_index(u, self.lo, self.hi, K)
         rho, omega = self.rho.to(u.dtype), self.omega.to(u.dtype)
+        if self.training and self.stat_drop > 0:       # thin the statistics so the step meets weak evidence too
+            keep = 1 - self.stat_drop * torch.rand(w.shape[0], 1, 1, device=w.device, dtype=w.dtype)
+            w = w * (torch.rand(w.shape[0], w.shape[1], 1, device=w.device, dtype=w.dtype) < keep).to(w.dtype)
+        if _CTX.force_prior == "identity":
+            rho = torch.linspace(self.lo, self.hi, K, device=u.device, dtype=u.dtype).expand_as(rho)
+        mode = _CTX.force_mode or self.mode
         causal = self.causal if _CTX.causal is None else _CTX.causal
-        diag, off, m, e = stats_dense(j, lam, v, w, K)              # (B, N, r, ·)
+        if (_TRITON["on"] and mode == "lena" and self.prior_net is None and u.is_cuda and u.dtype == torch.float32
+                and _CTX.stats is None and not self.log_stats and not (causal and _CTX.stream and not self.training)
+                and not (self.training and getattr(self, "gate_drop", 0.0) > 0)):   # gate_drop lives in the PyTorch path
+            # patched layers (vision/lena_mri_ext.py) keep the PyTorch path, except LeNA-S (n_eff only), which the
+            # fused kernel implements itself (design effect deff passed in, see lena_triton.py NEFF)
+            pt = _TRITON.get("patched")
+            if not pt:
+                from lena_triton import fused_codes
+                return fused_codes(u, v, w, rho, omega, self.lo, self.hi, self.tau, causal)
+            if _TRITON.get("neff_ok") is not None and _TRITON["neff_ok"]():
+                from lena_triton import fused_codes
+                return _TRITON["neff_codes"](self, fused_codes, u, v, w, rho, omega, causal)
         mom = self._u_moments(u, w) if self.prior_net is not None else None
         if causal:
-            acc = [diag.cumsum(1), off.cumsum(1), m.cumsum(1), e.cumsum(1), w.cumsum(1)]
+            j, lam, *acc = _fn("prefix_stats")(u, v, w, self.lo, self.hi, K)
             if mom is not None:
                 acc.append(mom.cumsum(1))
             if _CTX.stream and not self.training:
                 if self._state is not None:
                     acc = [a + s.unsqueeze(1) for a, s in zip(acc, self._state)]
                 self._state = tuple(a[:, -1].detach() for a in acc)
+            if _CTX.stats == "record":
+                self._rec = tuple(a[:, -1].detach() for a in acc)
+            elif _CTX.stats == "inject":
+                acc = [s.to(a.dtype).unsqueeze(1).expand_as(a) for a, s in zip(acc, self._inj)]
             diag, off, m, e, ntok = acc[:5]
             mom = acc[5] if mom is not None else None
         else:
-            diag, off, m, e, ntok = diag.sum(1), off.sum(1), m.sum(1), e.sum(1), w.sum(1)       # (B, r, ·)
+            j, lam, diag, off, m, e, ntok = _fn("pooled_stats")(u, v, w, self.lo, self.hi, K)      # (B, r, ·)
+            if _CTX.stats == "record":                     # per-input sums, to be pooled across inputs outside
+                self._rec = tuple(a.detach() for a in (diag, off, m, e, ntok))
+            elif _CTX.stats == "inject":                   # statistics pooled over other (unlabeled) inputs
+                diag, off, m, e, ntok = [s_.to(a.dtype).expand_as(a) for s_, a in zip(self._inj, (diag, off, m, e, ntok))]
             mom = mom.sum(1) if mom is not None else None
         if mom is not None:
             rho = rho + self.prior_net(self._pool_u(mom, ntok).to(self.prior_net[0].weight.dtype)).to(u.dtype)
-        if self.mode == "predictor":
+        if mode == "predictor":
             n1 = ntok.clamp_min(1).unsqueeze(-1)
             feat = torch.cat([diag / n1, F.pad(off, (0, 1)) / n1, m / n1], -1)
             theta = rho + self.stat_net(feat.to(self.stat_net[0].weight.dtype)).to(u.dtype)
             z = torch.zeros_like(ntok)
             d = dict(s=z, p=z, F=z)
         else:
-            theta, d = fit_and_step(diag, off, m, e, ntok, rho, omega, self.tau, self.mode)
+            theta, d = _fn("fit_and_step")(diag, off, m, e, ntok, rho, omega, self.tau, mode)
+            if self.training and getattr(self, "gate_drop", 0.0) > 0:   # train the shared-curve path too (shift gate)
+                keep = (torch.rand(theta.shape[0], *([1] * (theta.dim() - 1)), device=theta.device) >= self.gate_drop).to(theta.dtype)
+                theta = rho + keep * (theta - rho)
+        if self.log_stats:
+            d = dict(d, theta=theta.detach(), u=u.detach(), v=v.detach())
         if not causal:
             theta = theta.unsqueeze(1)
-        return spline_eval(theta, j, lam), d
+        return _fn("spline_eval")(theta, j, lam), d
 
     def forward(self, x):
         squeeze = x.dim() == 2
@@ -355,10 +449,14 @@ class LeNALinear(nn.Module):
             w = mask.to(sd).unsqueeze(-1).expand(Bsz, N, r)
         else:
             w = torch.ones_like(u)
+        g = self.anl(u) if self.anl is not None else None
+        vt = v - g if g is not None else v
         if self.use_checkpoint and self.training and torch.is_grad_enabled():
-            c, d = checkpoint(self._codes, u, v, w, use_reentrant=False)
+            c, d = checkpoint(self._codes, u, vt, w, use_reentrant=False)
         else:
-            c, d = self._codes(u, v, w)
+            c, d = self._codes(u, vt, w)
+        if g is not None:
+            c = c + g
         if self.log_stats:
             self.last = {k: t.detach() for k, t in d.items()}
         delta = self.scaling * F.linear(c.to(x.dtype), self.B.to(x.dtype))
@@ -433,7 +531,60 @@ class LoRALinear(nn.Module):
         return out + self.base.bias if self.base.bias is not None else out
 
 
-ADAPTERS = {"lena": LeNALinear, "lora": LoRALinear}
+class ANL(nn.Module):
+    """Adaptive non-linear layer of AuroRA (Dong et al., NeurIPS 2025; github.com/ins1stenc3/AuroRA, ANL.py),
+    copied: tanh(H tanh(z)) + W_s * sum_i B-spline(z_i), cubic B-splines, grid 5 on [-1, 1]."""
+
+    def __init__(self, in_features, out_features, grid_size=5, spline_order=3, scale_noise=0.1, grid_range=(-1, 1)):
+        super().__init__()
+        self.in_features, self.out_features, self.spline_order = in_features, out_features, spline_order
+        h = (grid_range[1] - grid_range[0]) / grid_size
+        self.register_buffer("grid", torch.arange(-spline_order, grid_size + spline_order + 1) * h + grid_range[0])
+        self.base_weight = nn.Parameter(torch.empty(out_features, in_features))
+        self.spline_weight = nn.Parameter(torch.empty(out_features, grid_size + spline_order))
+        nn.init.xavier_normal_(self.base_weight)
+        nn.init.uniform_(self.spline_weight, -scale_noise, scale_noise)
+
+    def b_splines(self, x):
+        x = x.unsqueeze(-1); g = self.grid
+        bases = ((x >= g[:-1]) & (x < g[1:])).to(x.dtype)
+        for k in range(1, self.spline_order + 1):
+            d1 = g[k:-1] - g[:-k - 1]; d2 = g[k + 1:] - g[1:-k]
+            d1 = torch.where(d1 == 0, torch.ones_like(d1), d1); d2 = torch.where(d2 == 0, torch.ones_like(d2), d2)
+            bases = (x - g[:-k - 1]) / d1 * bases[..., :-1] + (g[k + 1:] - x) / d2 * bases[..., 1:]
+        return bases
+
+    def forward(self, x):
+        shp = x.shape; x = x.reshape(-1, self.in_features)
+        base = torch.tanh(F.linear(torch.tanh(x), self.base_weight))
+        spl = F.linear(self.b_splines(x).sum(dim=1).to(self.spline_weight.dtype), self.spline_weight)
+        return (base + spl).reshape(*shp[:-1], self.out_features)
+
+
+class AuroRALinear(nn.Module):
+    """AuroRA baseline: h = W x + (alpha / r) B ANL(A dropout(x)), evaluated with the same dynamic forward
+    (AuroRA-D; the released merge path does not run). A: kaiming_uniform(a=sqrt 5) as in the ViT code, B: zeros."""
+
+    def __init__(self, base: nn.Linear, r=2, alpha=4, dropout=0.0):
+        super().__init__()
+        self.base = base
+        for p in self.base.parameters():
+            p.requires_grad_(False)
+        dev = base.weight.device
+        self.r, self.scaling = r, alpha / r
+        self.A1 = nn.Parameter(torch.empty(r, base.in_features, device=dev))
+        self.B = nn.Parameter(torch.zeros(base.out_features, r, device=dev))
+        nn.init.kaiming_uniform_(self.A1, a=math.sqrt(5))
+        self.anl = ANL(r, r).to(dev)
+        self.drop = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+    def forward(self, x):
+        z = F.linear(self.drop(x), self.A1.to(x.dtype))
+        return self.base(x) + self.scaling * F.linear(self.anl(z.float()).to(x.dtype), self.B.to(x.dtype))
+
+
+ADAPTERS = {"lena": LeNALinear, "lora": LoRALinear, "aurora": AuroRALinear}
+ADAPTERS["lena_aurora"] = lambda base, **kw: LeNALinear(base, base_nl="aurora", **kw)   # LeNA on AuroRA
 
 
 def inject(model, target_modules, adapter="lena", **kw):
@@ -453,7 +604,7 @@ def adapter_tensors(model):
     """Every non-base tensor of LeNA and LoRA layers (for saving)."""
     out = {}
     for name, L in model.named_modules():
-        if isinstance(L, (LeNALinear, LoRALinear)):
+        if isinstance(L, (LeNALinear, LoRALinear, AuroRALinear)):
             for k, v in L.state_dict().items():
                 if not k.startswith("base."):
                     out[f"{name}.{k}"] = v.detach().cpu()

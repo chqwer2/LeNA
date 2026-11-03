@@ -3,7 +3,7 @@ import math
 import torch
 import torch.nn as nn
 from lena_v7 import (hat_index, spline_eval, stats_dense, retained_solve, tri_mv, fit_and_step, LeNALinear,
-                     lena_context, inject_lena)
+                     lena_context, lena_override, inject_lena)
 
 torch.manual_seed(0)
 K, LO, HI = 16, -3.0, 3.0
@@ -216,3 +216,119 @@ def test_checkpoint_path_matches():
     y1 = L(x)
     assert torch.allclose(y0, y1)
     y1.sum().backward()
+
+
+def test_overrides_match_constructed_variants():
+    L = make_layer(causal=True)
+    x = torch.randn(2, 30, 24, dtype=torch.float64)
+    for mode in ("fixed", "plain"):
+        Lm = make_layer(mode=mode, causal=True); Lm.load_state_dict(L.state_dict())
+        with lena_override(mode=mode):
+            assert torch.allclose(L(x), Lm(x))
+    Li = make_layer(causal=True); Li.load_state_dict(L.state_dict())
+    with torch.no_grad():
+        Li.rho.copy_(torch.linspace(LO, HI, K).repeat(4, 1))
+    with lena_override(prior="identity"):
+        assert torch.allclose(L(x), Li(x))
+
+
+def test_record_inject_own_statistics_reproduces_last_position():
+    L = make_layer(causal=True)
+    x = torch.randn(1, 30, 24, dtype=torch.float64)
+    with lena_override(stats="record"):
+        y = L(x)
+    L._inj = L._rec
+    with lena_override(stats="inject"):
+        yi = L(x)
+    assert torch.allclose(yi[:, -1], y[:, -1])
+    assert not torch.allclose(yi[:, 5], y[:, 5])              # earlier positions now see the whole input
+    xo = torch.randn(1, 30, 24, dtype=torch.float64)          # another input's statistics change the output
+    with lena_override(stats="inject"):
+        assert not torch.allclose(L(xo)[:, -1], L.base(xo)[:, -1] + 0)
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Fused Triton path (lena_v7.set_triton): skipped without CUDA / Triton
+# ---------------------------------------------------------------------------------------------------------------
+def _triton_ok():
+    import importlib.util
+    if torch.cuda.is_available() and importlib.util.find_spec("triton") is not None:
+        return True
+    print("  skip: no CUDA / Triton")
+    return False
+
+
+def _fused_vs_ref(L, u, v, w, g):
+    import lena_v7
+    out = {}
+    for on in (False, True):
+        lena_v7.set_triton(on)
+        try:
+            uu, vv = u.clone().requires_grad_(True), v.clone().requires_grad_(True)
+            L.zero_grad()
+            c, d = L._codes(uu, vv, w)
+            (c * g).sum().backward()
+            out[on] = (c.detach(), d["s"].detach(), uu.grad, vv.grad, L.rho.grad.clone(), L.omega.grad.clone())
+        finally:
+            lena_v7.set_triton(False)
+    return out[False], out[True]
+
+
+def _rel(a, b):
+    return ((a - b).norm() / b.norm().clamp_min(1e-30)).item()
+
+
+def test_triton_matches_reference():
+    if not _triton_ok():
+        return
+    gen = torch.Generator().manual_seed(1)
+    cases = [(3, 70, 8, 1.0, False), (2, 200, 6, 2.5, True), (2, 6, 4, 1.0, False), (4, 33, 5, 4.0, True),
+             (1, 1, 3, 1.0, False)]                                  # (B, N, r, u scale, padding)
+    for causal in (True, False):
+        for B, N, r, scale, pad in cases:
+            L = LeNALinear(nn.Linear(8, 8), r=r, causal=causal, use_checkpoint=False).cuda()
+            with torch.no_grad():
+                L.rho.add_(0.3 * torch.randn(L.rho.shape, generator=gen).cuda()); L.omega.fill_(0.3)
+            u = (torch.randn(B, N, r, generator=gen) * scale).cuda()
+            v = (u + 0.8 * torch.relu(u - 0.2) + 0.5 * torch.randn(B, N, r, generator=gen).cuda())
+            w = torch.ones(B, N, r, device="cuda")
+            if pad:
+                for b in range(B):
+                    w[b, N - (b * 7) % max(N // 2, 1):] = 0
+            g = torch.randn(B, N, r, generator=gen).cuda()
+            ref, fus = _fused_vs_ref(L, u, v, w, g)
+            tag = (causal, B, N, r, scale, pad)
+            assert (fus[0] - ref[0]).abs().max() < 1e-4 * max(1.0, ref[0].abs().max().item()), tag
+            assert (fus[1] - ref[1]).abs().max() < 1e-4, tag                   # step s
+            for name, a, b in zip(("u", "v", "rho", "omega"), fus[2:], ref[2:]):
+                if b.norm() > 0:
+                    assert _rel(a, b) < 1e-3, (tag, name, _rel(a, b))
+                else:
+                    assert a.abs().max() < 1e-6, (tag, name)
+
+
+def test_triton_layer_training_step_matches():
+    if not _triton_ok():
+        return
+    import lena_v7
+    torch.manual_seed(3)
+    for causal in (True, False):
+        L = LeNALinear(nn.Linear(64, 48).cuda(), r=8, alpha=16, causal=causal).cuda()   # inner checkpoint on
+        with torch.no_grad():
+            L.B.normal_(0, 0.1); L.A1.mul_(3); L.A2.mul_(3)
+        x = torch.randn(2, 90, 64, device="cuda")
+        mask = torch.ones(2, 90, device="cuda"); mask[1, 60:] = 0
+        grads = []
+        for on in (False, True):
+            lena_v7.set_triton(on)
+            try:
+                L.zero_grad()
+                with lena_context(attention_mask=mask):
+                    y = L(x)
+                y.pow(2).sum().backward()
+                grads.append([y.detach()] + [p.grad.clone() for p in (L.A1, L.A2, L.B, L.rho, L.omega)])
+            finally:
+                lena_v7.set_triton(False)
+        assert torch.allclose(grads[1][0], grads[0][0], atol=1e-4, rtol=1e-4), causal
+        for a, b in zip(grads[1][1:], grads[0][1:]):
+            assert _rel(a, b) < 1e-3, (causal, _rel(a, b))
